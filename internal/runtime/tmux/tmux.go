@@ -292,31 +292,15 @@ func (t *Tmux) NewSessionWithCommandAndEnv(name, workDir, command string, env ma
 	}
 	// Add -e flags to set environment variables in the session before the shell starts.
 	// Keys are sorted for deterministic behavior.
-	keys := make([]string, 0, len(env))
-	for k := range env {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	var unsetKeys []string
-	for _, k := range keys {
-		if env[k] == "" {
-			// Empty values mean "unset this var". Collect for env -u prefix.
-			unsetKeys = append(unsetKeys, k)
-		} else {
-			args = append(args, "-e", fmt.Sprintf("%s=%s", k, env[k]))
-		}
+	_, unsetKeys, setKeys := sortedEnvKeys(env)
+	for _, k := range setKeys {
+		args = append(args, "-e", fmt.Sprintf("%s=%s", k, env[k]))
 	}
 	// For vars that need unsetting, prefix the command with env -u flags.
 	// tmux -e sets session-level env but the shell process still inherits
 	// from the tmux server's global environment. env -u ensures the var
 	// is actually absent from the child process.
-	if len(unsetKeys) > 0 && command != "" {
-		var prefix string
-		for _, k := range unsetKeys {
-			prefix += " -u " + k
-		}
-		command = "env" + prefix + " " + command
-	}
+	command = wrapCommandWithUnsetEnv(command, unsetKeys)
 	// Add the command as the last argument
 	args = append(args, command)
 	_, err := t.run(args...)
@@ -326,6 +310,62 @@ func (t *Tmux) NewSessionWithCommandAndEnv(name, workDir, command string, env ma
 	// tmux 3.3+: reset window-size from manual to latest (see NewSession).
 	t.run("set-option", "-wt", name, "window-size", "latest") //nolint:errcheck // best-effort
 	return nil
+}
+
+// sortedEnvKeys separates env into sorted unset keys (empty values) and sorted
+// set keys (non-empty values). Returns all keys sorted for deterministic output.
+func sortedEnvKeys(env map[string]string) (allKeys, unsetKeys, setKeys []string) {
+	allKeys = make([]string, 0, len(env))
+	for k := range env {
+		allKeys = append(allKeys, k)
+	}
+	sort.Strings(allKeys)
+	for _, k := range allKeys {
+		if env[k] == "" {
+			unsetKeys = append(unsetKeys, k)
+		} else {
+			setKeys = append(setKeys, k)
+		}
+	}
+	return allKeys, unsetKeys, setKeys
+}
+
+// wrapCommandWithUnsetEnv prefixes command with `env -u KEY ...` for each
+// unset key. Returns command unchanged if there are no unset keys.
+func wrapCommandWithUnsetEnv(command string, unsetKeys []string) string {
+	if len(unsetKeys) == 0 || command == "" {
+		return command
+	}
+	var prefix string
+	for _, k := range unsetKeys {
+		prefix += " -u " + k
+	}
+	return "env" + prefix + " " + command
+}
+
+// WrapCommandWithEnv builds a shell command string that sets all env vars and
+// unsets empty-valued vars before executing command. Used by respawn-pane which
+// lacks tmux -e flags — all env must be injected via the command string.
+//
+//	env -u STALE_VAR GC_CITY=/path GC_AGENT=name exec <command>
+func WrapCommandWithEnv(command string, env map[string]string) string {
+	if command == "" {
+		return command
+	}
+	if len(env) == 0 {
+		return command
+	}
+	_, unsetKeys, setKeys := sortedEnvKeys(env)
+	var parts []string
+	parts = append(parts, "env")
+	for _, k := range unsetKeys {
+		parts = append(parts, "-u", k)
+	}
+	for _, k := range setKeys {
+		parts = append(parts, fmt.Sprintf("%s=%s", k, env[k]))
+	}
+	parts = append(parts, "exec", command)
+	return strings.Join(parts, " ")
 }
 
 // EnsureSessionFresh ensures a session is available and healthy.

@@ -1704,6 +1704,127 @@ func TestPoolDesiredLimitsWakeWork(t *testing.T) {
 // selection paths skip them). Closing would break gc attach on drained
 // sessions. Tracked as a future cleanup task.
 
+// --- respawn restart tests ---
+
+func TestReconcileSessionBeads_RestartRequestedPrefersRespawn(t *testing.T) {
+	env := newReconcilerTestEnv()
+	env.cfg = &config.City{Agents: []config.Agent{{Name: "worker"}}}
+	env.addDesired("worker", "worker", true)
+	session := env.createSessionBead("worker", "worker")
+	env.markSessionActive(&session)
+
+	// Set restart_requested in bead metadata.
+	env.setSessionMetadata(&session, map[string]string{
+		"restart_requested":   "true",
+		"started_config_hash": runtime.CoreFingerprint(runtime.Config{Command: "test-cmd"}),
+	})
+
+	_ = env.reconcile([]beads.Bead{session})
+
+	// Verify Respawn was called (not Stop + Start).
+	var sawRespawn, sawStop bool
+	for _, call := range env.sp.Calls {
+		if call.Method == "Respawn" && call.Name == "worker" {
+			sawRespawn = true
+		}
+		if call.Method == "Stop" && call.Name == "worker" {
+			sawStop = true
+		}
+	}
+	if !sawRespawn {
+		t.Error("expected Respawn call, got none")
+	}
+	if sawStop {
+		t.Error("expected no Stop call when respawn succeeds, but Stop was called")
+	}
+
+	// Verify session_key was rotated.
+	b, _ := env.store.Get(session.ID)
+	if b.Metadata["session_key"] == "" {
+		t.Error("expected session_key to be set after restart")
+	}
+	if b.Metadata["restart_requested"] != "" {
+		t.Error("expected restart_requested to be cleared")
+	}
+}
+
+func TestReconcileSessionBeads_RestartRequestedFallsBackOnRespawnError(t *testing.T) {
+	env := newReconcilerTestEnv()
+	env.cfg = &config.City{Agents: []config.Agent{{Name: "worker"}}}
+	env.addDesired("worker", "worker", true)
+	session := env.createSessionBead("worker", "worker")
+	env.markSessionActive(&session)
+
+	// Set restart_requested and make Respawn fail.
+	env.setSessionMetadata(&session, map[string]string{
+		"restart_requested":   "true",
+		"started_config_hash": runtime.CoreFingerprint(runtime.Config{Command: "test-cmd"}),
+	})
+	env.sp.RespawnErrors["worker"] = runtime.ErrRespawnNotSupported
+
+	_ = env.reconcile([]beads.Bead{session})
+
+	// Verify fallback: Respawn was attempted, then Stop was called.
+	var sawRespawn, sawStop bool
+	for _, call := range env.sp.Calls {
+		if call.Method == "Respawn" && call.Name == "worker" {
+			sawRespawn = true
+		}
+		if call.Method == "Stop" && call.Name == "worker" {
+			sawStop = true
+		}
+	}
+	if !sawRespawn {
+		t.Error("expected Respawn attempt")
+	}
+	if !sawStop {
+		t.Error("expected Stop fallback after Respawn failure")
+	}
+}
+
+func TestReconcileSessionBeads_RestartRequestedDeadSessionSkipsRespawn(t *testing.T) {
+	env := newReconcilerTestEnv()
+	env.cfg = &config.City{Agents: []config.Agent{{Name: "worker"}}}
+	env.addDesired("worker", "worker", false) // not running
+	session := env.createSessionBead("worker", "worker")
+	env.markSessionActive(&session)
+
+	// Advance clock past stability threshold so a dead session is not
+	// mistaken for a crash (which would skip the restart-requested block).
+	env.clk.Time = env.clk.Time.Add(time.Minute)
+
+	// Set restart_requested in bead metadata.
+	env.setSessionMetadata(&session, map[string]string{
+		"restart_requested":   "true",
+		"started_config_hash": runtime.CoreFingerprint(runtime.Config{Command: "test-cmd"}),
+	})
+
+	_ = env.reconcile([]beads.Bead{session})
+
+	// Session is dead, so neither Respawn nor Stop should be called.
+	var sawRespawn, sawStop bool
+	for _, call := range env.sp.Calls {
+		if call.Method == "Respawn" && call.Name == "worker" {
+			sawRespawn = true
+		}
+		if call.Method == "Stop" && call.Name == "worker" {
+			sawStop = true
+		}
+	}
+	if sawRespawn {
+		t.Error("should not attempt Respawn on dead session")
+	}
+	if sawStop {
+		t.Error("should not attempt Stop on dead session")
+	}
+
+	// session_key should still be rotated.
+	b, _ := env.store.Get(session.ID)
+	if b.Metadata["session_key"] == "" {
+		t.Error("expected session_key to be rotated even for dead session")
+	}
+}
+
 // Regression: poolDesired derived from desiredState counts ALL session beads
 // (including discovered ones), inflating the desired count. This test verifies
 // that derivePoolDesired only counts pool sessions, not all discovered beads.

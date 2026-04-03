@@ -339,6 +339,46 @@ func (p *Provider) Attach(name string) error {
 	return cmd.Run()
 }
 
+// Respawn atomically replaces the process in an existing tmux session,
+// keeping the session (and any attached user) intact. This is used for
+// in-place restart (gc handoff / gc runtime request-restart) so the user
+// doesn't get disconnected.
+//
+// Returns [runtime.ErrRespawnNotSupported] if the session is not alive or
+// cannot be respawned. Callers should fall back to Stop + Start on error.
+func (p *Provider) Respawn(name string, cfg runtime.Config) error {
+	if !p.tm.IsSessionRunning(name) {
+		return runtime.ErrRespawnNotSupported
+	}
+
+	// Clear scrollback before respawn — old session output is stale.
+	_ = p.tm.ClearHistory(name + ":0.0")
+
+	// Build the env-wrapped command. respawn-pane lacks -e flags, so all
+	// env vars must be injected via the command string.
+	command := cfg.Command
+	if len(cfg.Env) > 0 {
+		command = WrapCommandWithEnv(command, cfg.Env)
+	}
+
+	if err := p.tm.RespawnPaneWithWorkDir(name+":0.0", cfg.WorkDir, command); err != nil {
+		return err
+	}
+
+	// Update workDir cache for CopyTo.
+	if cfg.WorkDir != "" {
+		p.mu.Lock()
+		p.workDirs[name] = cfg.WorkDir
+		p.mu.Unlock()
+	}
+
+	p.cache.Invalidate()
+	return nil
+}
+
+// Compile-time check for optional interface.
+var _ runtime.RespawnProvider = (*Provider)(nil)
+
 // Tmux returns the underlying [Tmux] instance for advanced operations
 // that are not part of the [runtime.Provider] interface.
 func (p *Provider) Tmux() *Tmux {

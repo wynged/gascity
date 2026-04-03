@@ -21,6 +21,10 @@ var ErrSessionExists = errors.New("session already exists")
 // structured pending/respond interaction capability for the requested session.
 var ErrInteractionUnsupported = errors.New("session interaction is unsupported")
 
+// ErrRespawnNotSupported reports that the provider does not support in-place
+// session restart via respawn. Callers should fall back to Stop + Start.
+var ErrRespawnNotSupported = errors.New("respawn not supported")
+
 // ContentBlock represents a content element in a message.
 // Type is "text" or "file_path".
 type ContentBlock struct {
@@ -192,6 +196,16 @@ type IdleWaitProvider interface {
 // input immediately without performing their own wait-idle heuristic first.
 type ImmediateNudgeProvider interface {
 	NudgeNow(name string, content []ContentBlock) error
+}
+
+// RespawnProvider is an optional extension for runtimes that support in-place
+// session restart. Instead of destroying and recreating the session (which
+// disconnects attached users), the provider atomically replaces the process
+// in the existing session. Returns [ErrRespawnNotSupported] if the runtime
+// cannot perform the operation (e.g., session has multiple panes or is dead).
+// Callers should fall back to Stop + Start on any error.
+type RespawnProvider interface {
+	Respawn(name string, cfg Config) error
 }
 
 // CopyEntry describes a file or directory to stage in the session's

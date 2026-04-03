@@ -28,6 +28,7 @@ type Fake struct {
 	Responses            map[string][]InteractionResponse
 	SleepCapabilityValue SessionSleepCapability
 	WaitForIdleErrors    map[string]error
+	RespawnErrors        map[string]error // per-session Respawn errors for testing
 }
 
 // Call records a single method invocation on [Fake].
@@ -57,6 +58,7 @@ func NewFake() *Fake {
 		Responses:            make(map[string][]InteractionResponse),
 		SleepCapabilityValue: SessionSleepCapabilityFull,
 		WaitForIdleErrors:    make(map[string]error),
+		RespawnErrors:        make(map[string]error),
 	}
 }
 
@@ -74,6 +76,7 @@ func NewFailFake() *Fake {
 		Responses:            make(map[string][]InteractionResponse),
 		SleepCapabilityValue: SessionSleepCapabilityFull,
 		WaitForIdleErrors:    make(map[string]error),
+		RespawnErrors:        make(map[string]error),
 		broken:               true,
 	}
 }
@@ -463,5 +466,27 @@ func (f *Fake) RunLive(name string, _ Config) error {
 	if f.broken {
 		return fmt.Errorf("session unavailable")
 	}
+	return nil
+}
+
+// Respawn records the call and simulates an in-place session restart.
+// If RespawnErrors has an entry for this session, returns that error.
+// If the session doesn't exist, returns [ErrRespawnNotSupported].
+// Otherwise, updates the session's stored config (simulating restart).
+func (f *Fake) Respawn(name string, cfg Config) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.Calls = append(f.Calls, Call{Method: "Respawn", Name: name, Config: cfg})
+	if f.broken {
+		return fmt.Errorf("session unavailable")
+	}
+	if err, ok := f.RespawnErrors[name]; ok {
+		return err
+	}
+	if _, exists := f.sessions[name]; !exists {
+		return ErrRespawnNotSupported
+	}
+	// Simulate in-place restart: update stored config.
+	f.sessions[name] = cfg
 	return nil
 }

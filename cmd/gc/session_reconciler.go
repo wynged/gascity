@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"strings"
 	"time"
 
@@ -269,8 +270,11 @@ func reconcileSessionBeads(
 		// Restart-requested: agent asked for a fresh session
 		// (gc runtime request-restart / gc handoff). Rotate session_key
 		// to a fresh value and clear started_config_hash so the next wake
-		// builds a first-start command (--session-id <new_key>). Then stop
-		// immediately; the next tick will re-create and re-wake.
+		// builds a first-start command (--session-id <new_key>).
+		//
+		// If the provider supports in-place respawn, atomically replace the
+		// process so attached users stay connected. Otherwise, stop the
+		// session; the next tick will re-create and re-wake.
 		//
 		// Check both tmux metadata (dops) and bead metadata. The bead
 		// metadata flag survives tmux session death, so this works even
@@ -300,6 +304,10 @@ func reconcileSessionBeads(
 				session.Metadata["restart_requested"] = ""
 				session.Metadata["started_config_hash"] = ""
 				if alive {
+					if respawned := tryRespawnRestart(ctx, session, tp, cfg, sp, store, clk, rec, startupTimeout, stdout, stderr); respawned {
+						continue
+					}
+					// Respawn not supported or failed — fall back to stop+recreate.
 					if err := sp.Stop(name); err != nil {
 						fmt.Fprintf(stderr, "session reconciler: stopping restart-requested %s: %v\n", name, err) //nolint:errcheck
 					} else {
@@ -737,6 +745,105 @@ func resolveSessionCommand(command, sessionKey string, rp *config.ResolvedProvid
 		return command + " " + rp.SessionIDFlag + " " + sessionKey
 	}
 	return resolveResumeCommand(command, sessionKey, rp)
+}
+
+// tryRespawnRestart attempts an in-place session restart via the provider's
+// RespawnProvider interface. Returns true if the respawn succeeded and the
+// caller should skip the stop+recreate fallback.
+//
+// On success, runs pre_start hooks, respawns the session, re-applies
+// session_live, and updates bead metadata (hashes, generation). On failure
+// (including pre_start failure or provider not supporting respawn), returns
+// false so the caller falls back to the normal stop+recreate path.
+func tryRespawnRestart(
+	ctx context.Context,
+	session *beads.Bead,
+	tp TemplateParams,
+	cfg *config.City,
+	sp runtime.Provider,
+	store beads.Store,
+	clk clock.Clock,
+	rec events.Recorder,
+	startupTimeout time.Duration,
+	stdout, stderr io.Writer,
+) bool {
+	rp, ok := sp.(runtime.RespawnProvider)
+	if !ok {
+		return false
+	}
+	name := session.Metadata["session_name"]
+
+	// Build the respawn config using the same logic as prepareStartCandidate.
+	candidate := startCandidate{session: session, tp: tp}
+	prepared, err := prepareStartCandidate(candidate, cfg, store, clk)
+	if err != nil {
+		fmt.Fprintf(stderr, "session reconciler: respawn prepare %s: %v\n", name, err) //nolint:errcheck
+		return false
+	}
+
+	// Run pre_start hooks. Failure means the workDir may be in a bad state,
+	// so fall back to full recreate.
+	if len(prepared.cfg.PreStart) > 0 {
+		setupEnv := make(map[string]string, len(prepared.cfg.Env))
+		for k, v := range prepared.cfg.Env {
+			setupEnv[k] = v
+		}
+		for i, cmd := range prepared.cfg.PreStart {
+			if err := execSetupCommand(ctx, cmd, setupEnv, startupTimeout); err != nil {
+				fmt.Fprintf(stderr, "session reconciler: respawn pre_start[%d] %s: %v\n", i, name, err) //nolint:errcheck
+				return false
+			}
+		}
+	}
+
+	// Attempt respawn.
+	if err := rp.Respawn(name, prepared.cfg); err != nil {
+		fmt.Fprintf(stderr, "session reconciler: respawn %s: %v\n", name, err) //nolint:errcheck
+		return false
+	}
+
+	// Re-apply session_live hooks.
+	if err := sp.RunLive(name, prepared.cfg); err != nil {
+		fmt.Fprintf(stderr, "session reconciler: respawn RunLive %s: %v\n", name, err) //nolint:errcheck
+		// Non-fatal: session is respawned, live hooks are best-effort.
+	}
+
+	// Update bead metadata with new hashes.
+	metadata := map[string]string{
+		"config_hash":         prepared.coreHash,
+		"started_config_hash": prepared.coreHash,
+		"live_hash":           prepared.liveHash,
+		"started_live_hash":   prepared.liveHash,
+	}
+	if session.Metadata["sleep_reason"] != "" {
+		metadata["sleep_reason"] = ""
+	}
+	_ = store.SetMetadataBatch(session.ID, metadata)
+	for k, v := range metadata {
+		session.Metadata[k] = v
+	}
+
+	fmt.Fprintf(stdout, "Respawned session '%s'\n", tp.DisplayName()) //nolint:errcheck
+	rec.Record(events.Event{
+		Type:    events.SessionWoke,
+		Actor:   "gc",
+		Subject: tp.DisplayName(),
+		Message: "respawned in-place",
+	})
+	return true
+}
+
+// execSetupCommand runs a shell command with env vars and a timeout.
+// Used by tryRespawnRestart for pre_start hooks outside the startOps interface.
+func execSetupCommand(ctx context.Context, cmd string, env map[string]string, timeout time.Duration) error {
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	c := exec.CommandContext(ctx, "sh", "-c", cmd)
+	c.Env = os.Environ()
+	for k, v := range env {
+		c.Env = append(c.Env, k+"="+v)
+	}
+	return c.Run()
 }
 
 // resolveResumeCommand returns the command to use when resuming a session.
