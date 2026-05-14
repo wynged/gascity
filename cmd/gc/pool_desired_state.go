@@ -43,6 +43,36 @@ func beadPriority(b beads.Bead) int {
 	return 0
 }
 
+// isNamedSessionTemplateOnly reports whether the agent backs one or more
+// [[named_session]] aliases AND has no independent pool capability
+// (no namepool, no max_active_sessions). Such templates can never satisfy
+// generic ephemeral demand — every session that materializes them must be
+// a configured named alias — so they must be excluded from poolDesired
+// computation even though SupportsGenericEphemeralSessions returns true.
+//
+// Without this gate, an alias-shaped work-bead assignee (e.g. "pringle--dorito"
+// from gc handoff or stale crew writes) that resolves back to the template
+// triggers an infinite poolDesired retry loop against a template that has no
+// pool — see ch-9y0t.
+func isNamedSessionTemplateOnly(cfg *config.City, agent *config.Agent) bool {
+	if cfg == nil || agent == nil {
+		return false
+	}
+	if strings.TrimSpace(agent.Namepool) != "" || len(agent.NamepoolNames) > 0 {
+		return false
+	}
+	if agent.MaxActiveSessions != nil {
+		return false
+	}
+	template := agent.QualifiedName()
+	for i := range cfg.NamedSessions {
+		if cfg.NamedSessions[i].TemplateQualifiedName() == template {
+			return true
+		}
+	}
+	return false
+}
+
 // PoolDesiredState holds the desired state for a single agent template.
 type PoolDesiredState struct {
 	Template string
@@ -154,6 +184,9 @@ func computePoolDesiredStates(
 		if !agent.SupportsGenericEphemeralSessions() {
 			continue
 		}
+		if isNamedSessionTemplateOnly(cfg, agent) {
+			continue
+		}
 		template := agent.QualifiedName()
 
 		// Resume tier: actionable assigned work beads whose assignee resolves
@@ -260,6 +293,9 @@ func computePoolDesiredStates(
 		for i := range cfg.Agents {
 			agent := &cfg.Agents[i]
 			if agent.Suspended {
+				continue
+			}
+			if isNamedSessionTemplateOnly(cfg, agent) {
 				continue
 			}
 			template := agent.QualifiedName()
@@ -376,6 +412,9 @@ func poolInFlightNewRequests(cfg *config.City, sessionInfos []sessionpkg.Info, r
 	for i := range cfg.Agents {
 		agent := &cfg.Agents[i]
 		if agent.Suspended || !agent.SupportsGenericEphemeralSessions() {
+			continue
+		}
+		if isNamedSessionTemplateOnly(cfg, agent) {
 			continue
 		}
 		template := agent.QualifiedName()

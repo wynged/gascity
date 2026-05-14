@@ -1624,3 +1624,175 @@ func TestCanonicalSingletonAliasHeldTemplates_ExcludesFailedCreateHolder(t *test
 		t.Fatalf("drained holder released its alias and must NOT mark mayor held; got held")
 	}
 }
+
+// TestComputePoolDesiredStates_NamedSessionTemplateNotPoolEligible covers
+// ch-9y0t: a template that backs only [[named_session]] aliases (no namepool,
+// no max_active_sessions) must never produce poolDesired entries, even when a
+// work bead's alias-shaped assignee resolves back to the template.
+func TestComputePoolDesiredStates_NamedSessionTemplateNotPoolEligible(t *testing.T) {
+	namedAgent := config.Agent{Name: "crew", Dir: "pringle"}
+	poolAgentMax := poolAgent("pool-max", "rig", intPtr(2), 0)
+	poolAgentNamepool := config.Agent{
+		Name:          "pool-np",
+		Dir:           "rig",
+		NamepoolNames: []string{"a", "b"},
+	}
+
+	cases := []struct {
+		name         string
+		agents       []config.Agent
+		named        []config.NamedSession
+		work         []beads.Bead
+		sessions     []beads.Bead
+		scaleCheck   map[string]int
+		wantFor      string // template that MUST have a non-empty Requests slot
+		wantRequests int
+		wantNotFor   string // template that MUST NOT appear in result with requests
+	}{
+		{
+			name:   "named-always template ignored (the ch-9y0t repro)",
+			agents: []config.Agent{namedAgent},
+			named: []config.NamedSession{
+				{Template: "crew", Dir: "pringle", Name: "dorito", Mode: "always"},
+			},
+			work: []beads.Bead{
+				workBead("w1", "pringle/crew", "pringle--dorito", "in_progress", 3),
+			},
+			sessions: []beads.Bead{{
+				ID: "s-dorito", Status: "open", Type: sessionBeadType,
+				Metadata: map[string]string{
+					"template":                  "pringle/crew",
+					"session_name":              "pringle--dorito",
+					"configured_named_identity": "pringle/dorito",
+				},
+			}},
+			wantNotFor: "pringle/crew",
+		},
+		{
+			name:   "named-on_demand template ignored",
+			agents: []config.Agent{namedAgent},
+			named: []config.NamedSession{
+				{Template: "crew", Dir: "pringle", Name: "combo", Mode: "on_demand"},
+			},
+			work: []beads.Bead{
+				workBead("w1", "pringle/crew", "pringle--combo", "in_progress", 3),
+			},
+			sessions: []beads.Bead{{
+				ID: "s-combo", Status: "open", Type: sessionBeadType,
+				Metadata: map[string]string{
+					"template":                  "pringle/crew",
+					"session_name":              "pringle--combo",
+					"configured_named_identity": "pringle/combo",
+				},
+			}},
+			wantNotFor: "pringle/crew",
+		},
+		{
+			name:   "scale_check on named-only template ignored",
+			agents: []config.Agent{namedAgent},
+			named: []config.NamedSession{
+				{Template: "crew", Dir: "pringle", Name: "dorito", Mode: "always"},
+			},
+			scaleCheck: map[string]int{"pringle/crew": 3},
+			wantNotFor: "pringle/crew",
+		},
+		{
+			name:   "pool agent with max_active_sessions still fires (regression guard)",
+			agents: []config.Agent{poolAgentMax},
+			work: []beads.Bead{
+				workBead("w1", "rig/pool-max", "sess-1", "in_progress", 5),
+			},
+			sessions:     []beads.Bead{sessionBead("sess-1", "open")},
+			wantFor:      "rig/pool-max",
+			wantRequests: 1,
+		},
+		{
+			name:         "pool agent with namepool still fires (regression guard)",
+			agents:       []config.Agent{poolAgentNamepool},
+			scaleCheck:   map[string]int{"rig/pool-np": 1},
+			wantFor:      "rig/pool-np",
+			wantRequests: 1,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := &config.City{Agents: tc.agents, NamedSessions: tc.named}
+			result := ComputePoolDesiredStates(cfg, tc.work, sessionInfosFromBeads(tc.sessions), tc.scaleCheck)
+
+			if tc.wantNotFor != "" {
+				for _, ds := range result {
+					if ds.Template == tc.wantNotFor && len(ds.Requests) > 0 {
+						t.Fatalf("template %q got %d requests, want 0 (named-session-only template must not poolDesired)", ds.Template, len(ds.Requests))
+					}
+				}
+			}
+			if tc.wantFor != "" {
+				found := false
+				for _, ds := range result {
+					if ds.Template != tc.wantFor {
+						continue
+					}
+					found = true
+					if len(ds.Requests) != tc.wantRequests {
+						t.Fatalf("template %q got %d requests, want %d", ds.Template, len(ds.Requests), tc.wantRequests)
+					}
+				}
+				if !found {
+					t.Fatalf("template %q missing from result; pool eligibility regressed", tc.wantFor)
+				}
+			}
+		})
+	}
+}
+
+// TestIsNamedSessionTemplateOnly_Predicate covers the predicate directly
+// across the matrix of pool-capability flags.
+func TestIsNamedSessionTemplateOnly_Predicate(t *testing.T) {
+	cases := []struct {
+		name  string
+		agent config.Agent
+		named []config.NamedSession
+		want  bool
+	}{
+		{
+			name:  "no named sessions, no pool config -> false",
+			agent: config.Agent{Name: "crew", Dir: "pringle"},
+			want:  false,
+		},
+		{
+			name:  "named session points at template, no pool config -> true",
+			agent: config.Agent{Name: "crew", Dir: "pringle"},
+			named: []config.NamedSession{{Template: "crew", Dir: "pringle", Name: "dorito"}},
+			want:  true,
+		},
+		{
+			name:  "named session plus max_active_sessions -> false (pool capability)",
+			agent: config.Agent{Name: "crew", Dir: "pringle", MaxActiveSessions: intPtr(3)},
+			named: []config.NamedSession{{Template: "crew", Dir: "pringle", Name: "dorito"}},
+			want:  false,
+		},
+		{
+			name:  "named session plus namepool -> false (pool capability)",
+			agent: config.Agent{Name: "crew", Dir: "pringle", NamepoolNames: []string{"a"}},
+			named: []config.NamedSession{{Template: "crew", Dir: "pringle", Name: "dorito"}},
+			want:  false,
+		},
+		{
+			name:  "named session for different template -> false",
+			agent: config.Agent{Name: "crew", Dir: "pringle"},
+			named: []config.NamedSession{{Template: "other", Dir: "pringle", Name: "dorito"}},
+			want:  false,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := &config.City{NamedSessions: tc.named}
+			got := isNamedSessionTemplateOnly(cfg, &tc.agent)
+			if got != tc.want {
+				t.Fatalf("isNamedSessionTemplateOnly = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
