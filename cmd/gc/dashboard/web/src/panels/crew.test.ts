@@ -46,6 +46,68 @@ describe("crew empty states", () => {
     expect(document.getElementById("crew-empty")?.textContent).not.toContain("Select a city");
   });
 
+  it("renders the LLM model column from model, options.model, or a dash", async () => {
+    vi.spyOn(api, "GET").mockImplementation(async (path: string) => {
+      if (path === "/v0/city/{cityName}/sessions") {
+        return {
+          data: {
+            items: [
+              // Running agent — exact transcript model id wins.
+              {
+                active_bead: "",
+                attached: true,
+                id: "s-live",
+                last_active: "2026-04-18T20:00:00Z",
+                last_output: "",
+                model: "claude-opus-4-1",
+                options: { model: "opus" },
+                running: true,
+                template: "rig-a/crew/live",
+              },
+              // No live model — falls back to the config-authoritative value.
+              {
+                active_bead: "",
+                attached: false,
+                id: "s-config",
+                last_active: "2026-04-18T20:00:00Z",
+                last_output: "",
+                options: { model: "sonnet" },
+                running: false,
+                template: "rig-a/crew/config",
+              },
+              // Neither — shows a dash.
+              {
+                active_bead: "",
+                attached: false,
+                id: "s-none",
+                last_active: "2026-04-18T20:00:00Z",
+                last_output: "",
+                running: false,
+                template: "rig-a/crew/none",
+              },
+            ],
+          },
+        } as never;
+      }
+      if (path === "/v0/city/{cityName}/session/{id}/pending") {
+        return { data: { pending: false } } as never;
+      }
+      if (path === "/v0/city/{cityName}/bead/{id}") {
+        return { data: null } as never;
+      }
+      throw new Error(`unexpected GET ${path}`);
+    });
+
+    await renderCrew();
+
+    const rows = document.querySelectorAll<HTMLTableRowElement>("#crew-tbody tr");
+    expect(rows.length).toBe(3);
+    // Model is the third column (Name, Rig, Model, ...).
+    expect(rows[0]?.cells[2]?.textContent).toBe("claude-opus-4-1");
+    expect(rows[1]?.cells[2]?.textContent).toBe("sonnet");
+    expect(rows[2]?.cells[2]?.textContent).toBe("—");
+  });
+
   it("loads older transcript pages without losing the drawer loading sentinel", async () => {
     document.body.innerHTML = `
       <div id="crew-loading">Loading crew...</div>

@@ -71,6 +71,7 @@ export async function renderCrew(): Promise<void> {
     const row = el("tr", {}, [
       el("td", {}, [session.template]),
       el("td", {}, [session.rig ?? "city"]),
+      el("td", {}, [sessionModel(session)]),
       el("td", {}, [el("span", { class: `badge ${statusBadgeClass(state)}` }, [state])]),
       el("td", {}, [beadText]),
       el("td", { class: calculateActivity(session.last_active).colorClass ? `activity-${calculateActivity(session.last_active).colorClass}` : "" }, [
@@ -137,6 +138,14 @@ function classifyCrewState(session: SessionRecord, hasPending: boolean): string 
   return "idle";
 }
 
+// sessionModel resolves the LLM model to show for a session. `model` is the
+// exact transcript model id (present only while the agent is running);
+// `options.model` is the config-authoritative value (e.g. "sonnet"/"opus")
+// available for every session. Prefer the live value, fall back to config.
+function sessionModel(session: SessionRecord): string {
+  return session.model ?? session.options?.model ?? "—";
+}
+
 function attachButton(template: string): HTMLElement {
   const btn = el("button", { class: "attach-btn", type: "button" }, ["📎 Attach"]);
   btn.addEventListener("click", async () => {
@@ -181,6 +190,7 @@ function renderRiggedAgents(sessions: SessionRecord[], beadTitles: Map<string, s
       el("td", {}, [logButton(session.id, session.template)]),
       el("td", {}, [el("span", { class: "badge badge-muted" }, [session.pool ?? "pool"])]),
       el("td", {}, [session.rig ?? "city"]),
+      el("td", {}, [sessionModel(session)]),
       el("td", { class: "rigged-issue" }, [
         session.active_bead
           ? `${session.active_bead} ${beadTitles.get(session.active_bead) ?? ""}`.trim()
@@ -197,6 +207,7 @@ function renderRiggedAgents(sessions: SessionRecord[], beadTitles: Map<string, s
       el("th", {}, ["Agent"]),
       el("th", {}, ["Pool"]),
       el("th", {}, ["Rig"]),
+      el("th", {}, ["Model"]),
       el("th", {}, ["Working On"]),
       el("th", {}, ["Status"]),
       el("th", {}, ["Activity"]),
@@ -223,6 +234,7 @@ function renderPooledAgents(sessions: SessionRecord[]): void {
   rows.forEach((session) => {
     tbody.append(el("tr", {}, [
       el("td", {}, [session.template]),
+      el("td", {}, [sessionModel(session)]),
       el("td", {}, [el("span", { class: `badge ${session.active_bead ? "badge-yellow" : "badge-green"}` }, [session.active_bead ? "Working" : "Idle"])]),
       el("td", { class: "status-hint" }, [truncate(session.last_output, 80) || "—"]),
       el("td", {}, [formatTimestamp(session.last_active)]),
@@ -233,6 +245,7 @@ function renderPooledAgents(sessions: SessionRecord[]): void {
   body.append(el("table", {}, [
     el("thead", {}, [el("tr", {}, [
       el("th", {}, ["Agent"]),
+      el("th", {}, ["Model"]),
       el("th", {}, ["State"]),
       el("th", {}, ["Work"]),
       el("th", {}, ["Activity"]),
