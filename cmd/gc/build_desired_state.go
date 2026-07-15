@@ -3074,19 +3074,22 @@ func resolveTemplateForSessionBeadInfo(
 // FingerprintExtra are part of CoreFingerprint, so divergent shapes across
 // ticks trip the reconciler's config-drift drain.
 //
-// Named beads are deliberately NOT canonicalized here. The named-session
-// TemplateParams contract (ConfiguredNamedIdentity/Mode, GC_SESSION_ORIGIN,
-// canonical session_name, ...) is authored by the main named-session loop
-// and reconstructNamedSessionTemplateParams; rewriting only the (agent,
-// qualifiedName) pair in rediscovery while leaving the rest of the shape
-// as plain ephemeral would produce a partially-named TemplateParams that
-// downstream consumers don't expect. The Env-side drift that named beads
-// can still exhibit across rediscovery vs. the named-session loop is a
-// separate fix — the accompanying PR explicitly scopes it out.
+// Named beads resolve to their own stored alias (configured_named_identity,
+// e.g. "pringle/kettle"), NOT the shared backing template's qualified name
+// ("pringle/crew"). Phase 1 (the main named-session loop) builds the session
+// with spec.Identity; this rediscovery seam must return the same identity or
+// ParseQualifiedName binds AgentBase to the template base name and the worktree
+// leaks into the template path (.gc/worktrees/pringle/crew) for on_demand
+// crew. A named bead with no stored identity (legacy/pre-stamp) falls back to
+// the template QN, unchanged from before. NOTE: this aligns the (agent,
+// qualifiedName) pair and therefore WorkDir/AgentBase; the rest of the named
+// TemplateParams Env shape (GC_SESSION_ORIGIN=named, ConfiguredNamedIdentity/
+// Mode) is still authored only by Phase 1, so some Env-side drift across
+// rediscovery vs. the named-session loop remains a separate follow-up.
 //
 // Rules:
-//   - Named bead → (cfgAgent, cfgAgent.QualifiedName()). Identical to the
-//     pre-change rediscovery shape so named-bead handling is unchanged.
+//   - Named bead with stored identity → (cfgAgent, configured_named_identity).
+//   - Named bead without stored identity → (cfgAgent, cfgAgent.QualifiedName()).
 //   - Non-expanding agent → (cfgAgent, cfgAgent.QualifiedName()).
 //   - Instance-expanding agent with a stamped pool_slot → (deepCopyAgent
 //     at that slot, qualifiedInstance). Matches realizePoolDesiredSessions.
@@ -3101,6 +3104,16 @@ func canonicalSessionIdentityWithConfig(cfg *config.City, cfgAgent *config.Agent
 		return nil, ""
 	}
 	if isNamedSessionBead(bead) {
+		// A named-session bead's work_dir/AgentBase must resolve from its own
+		// stored alias (e.g. "pringle/kettle"), not the shared backing template
+		// ("pringle/crew"). Phase 1 (the named-session loop) builds the session
+		// with spec.Identity; this Phase-2 rediscovery seam must return the same
+		// identity or ParseQualifiedName yields AgentBase="crew" and the worktree
+		// leaks into the template path (.gc/worktrees/pringle/crew). See ch-9y0t
+		// follow-up: this is the on_demand-only leak the pool-desired fix missed.
+		if identity := namedSessionIdentity(bead); identity != "" {
+			return cfgAgent, identity
+		}
 		return cfgAgent, cfgAgent.QualifiedName()
 	}
 	if cfgAgent.UsesCanonicalSingletonPoolIdentity() {
