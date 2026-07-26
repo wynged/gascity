@@ -484,3 +484,69 @@ dolt.auto-start: false
 		t.Fatalf("HOME should be passed through to agent env")
 	}
 }
+
+// TestRediscoveredNamedBeadWorkDirUsesAliasNotTemplate is the end-to-end
+// regression for the on_demand crew worktree leak: a named-session bead whose
+// backing template is "pringle/crew" but whose stored identity is
+// "pringle/kettle" must resolve its work_dir to .gc/worktrees/pringle/kettle,
+// NOT .gc/worktrees/pringle/crew. It drives the exact reconciler seam
+// (canonicalSessionIdentity -> resolveTemplateForSessionBead) that Phase-2
+// rediscovery uses for a woken on_demand named session.
+func TestRediscoveredNamedBeadWorkDirUsesAliasNotTemplate(t *testing.T) {
+	cityPath := t.TempDir()
+	writeTemplateResolveCityConfig(t, cityPath, "file")
+	rigRoot := filepath.Join(cityPath, "pringle")
+	if err := os.MkdirAll(rigRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	params := &agentBuildParams{
+		cityName:   "city",
+		cityPath:   cityPath,
+		workspace:  &config.Workspace{Provider: "test"},
+		providers:  map[string]config.ProviderSpec{"test": {Command: "echo", PromptMode: "none"}},
+		lookPath:   func(string) (string, error) { return "/bin/echo", nil },
+		fs:         fsys.OSFS{},
+		rigs:       []config.Rig{{Name: "pringle", Path: rigRoot}},
+		beaconTime: time.Unix(0, 0),
+		beadNames:  make(map[string]string),
+		stderr:     io.Discard,
+	}
+
+	// The shared crew template that all 11 pringle named sessions back onto.
+	crewAgent := &config.Agent{
+		Name:    "crew",
+		Dir:     "pringle",
+		WorkDir: ".gc/worktrees/{{.Rig}}/{{.AgentBase}}",
+	}
+	kettleBead := beads.Bead{
+		ID: "ga-kettle",
+		Metadata: map[string]string{
+			"template":                   "pringle/crew",
+			"agent_name":                 "pringle/kettle",
+			"session_name":               "pringle--kettle",
+			namedSessionMetadataKey:      "true",
+			namedSessionIdentityMetadata: "pringle/kettle",
+		},
+	}
+
+	// Rediscovery seam: canonicalize the bead's identity, then resolve the
+	// template exactly as build_desired_state's Phase-2 path does.
+	_, qn := canonicalSessionIdentity(crewAgent, kettleBead)
+	if qn != "pringle/kettle" {
+		t.Fatalf("canonicalSessionIdentity qn = %q, want pringle/kettle", qn)
+	}
+	tp, err := resolveTemplateForSessionBeadInfo(params, crewAgent, qn, nil, seedSessionInfo(kettleBead))
+	if err != nil {
+		t.Fatalf("resolveTemplateForSessionBeadInfo: %v", err)
+	}
+
+	wantWorkDir := filepath.Join(cityPath, ".gc", "worktrees", "pringle", "kettle")
+	if tp.WorkDir != wantWorkDir {
+		t.Fatalf("WorkDir = %q, want %q (leaked into the crew template path?)", tp.WorkDir, wantWorkDir)
+	}
+	leakWorkDir := filepath.Join(cityPath, ".gc", "worktrees", "pringle", "crew")
+	if tp.WorkDir == leakWorkDir {
+		t.Fatalf("WorkDir leaked into template path %q", leakWorkDir)
+	}
+}
