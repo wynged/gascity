@@ -520,6 +520,7 @@ func TestRediscoveredNamedBeadWorkDirUsesAliasNotTemplate(t *testing.T) {
 		WorkDir: ".gc/worktrees/{{.Rig}}/{{.AgentBase}}",
 	}
 	kettleBead := beads.Bead{
+		ID: "ga-kettle",
 		Metadata: map[string]string{
 			"template":                   "pringle/crew",
 			"agent_name":                 "pringle/kettle",
@@ -535,9 +536,9 @@ func TestRediscoveredNamedBeadWorkDirUsesAliasNotTemplate(t *testing.T) {
 	if qn != "pringle/kettle" {
 		t.Fatalf("canonicalSessionIdentity qn = %q, want pringle/kettle", qn)
 	}
-	tp, err := resolveTemplateForSessionBead(params, crewAgent, qn, nil, kettleBead)
+	tp, err := resolveTemplateForSessionBeadInfo(params, crewAgent, qn, nil, seedSessionInfo(kettleBead))
 	if err != nil {
-		t.Fatalf("resolveTemplateForSessionBead: %v", err)
+		t.Fatalf("resolveTemplateForSessionBeadInfo: %v", err)
 	}
 
 	wantWorkDir := filepath.Join(cityPath, ".gc", "worktrees", "pringle", "kettle")

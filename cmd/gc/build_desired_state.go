@@ -3137,6 +3137,13 @@ func canonicalSessionIdentityWithConfigInfo(cfg *config.City, cfgAgent *config.A
 		return nil, ""
 	}
 	if isNamedSessionInfo(info) {
+		// Mirror of the raw form's named-bead branch: resolve from the
+		// session's own stored alias so rediscovery reproduces Phase 1's
+		// identity and the worktree does not leak into the backing
+		// template's path. See canonicalSessionIdentityWithConfig.
+		if identity := namedSessionIdentityInfo(info); identity != "" {
+			return cfgAgent, identity
+		}
 		return cfgAgent, cfgAgent.QualifiedName()
 	}
 	if cfgAgent.UsesCanonicalSingletonPoolIdentity() {
