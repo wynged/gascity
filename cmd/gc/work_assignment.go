@@ -7,6 +7,7 @@ import (
 
 	"github.com/gastownhall/gascity/internal/beadmeta"
 	"github.com/gastownhall/gascity/internal/beads"
+	"github.com/gastownhall/gascity/internal/mail/beadmail"
 )
 
 // workAssignment is the typed boundary façade the SESSION reconciler uses to
@@ -94,12 +95,43 @@ func (w workAssignment) ReadyAssignedTo(assignee string, tierMode beads.TierMode
 	return beads.ReadyLive(store, beads.ReadyQuery{Assignee: assignee, TierMode: tierMode})
 }
 
-// HasNonSessionWork reports whether any bead in items is non-session WORK
-// (skipping session beads and repairable session beads). Shared filter for the
+// IsWorkItem reports whether a bead returned by an assignee-keyed probe is
+// really WORK — the shared membership test for every session-assignment sweep
+// (the release/reassign mutators and the boolean has-work gates alike).
+//
+// Two bead classes answer an assignee query without being work:
+//
+//   - Session beads (and repairable ones), which carry their own identity as
+//     assignee. This was always filtered.
+//   - Mail messages. beadmail addresses a message by writing the recipient into
+//     Assignee, and the inbox query is Assignee == address — so on the messaging
+//     side the assignee IS the delivery address, not a claim of ownership. A
+//     handoff note is addressed to the very session that is cycling out, so the
+//     reap sweep found it, "released" it by clearing the assignee, and the
+//     successor's inbox no longer matched it: the note was silently lost
+//     (ch-l0f1v). The gates are the same rule read the other way — an unread
+//     message must not make a dead session look like it still holds work, or the
+//     session bead never closes and the successor never spawns.
+//
+// The message test is beadmail.IsMessageBead (a bare Type check), NOT
+// coordclass.Classify: mail beads are ephemeral wisps, and Classify's wisp arm
+// precedes its messaging arm, so it routes a mail wisp to ClassGraph.
+func (w workAssignment) IsWorkItem(item beads.Bead) bool {
+	if sessionpkg.IsSessionBeadOrRepairable(item) {
+		return false
+	}
+	if beadmail.IsMessageBead(item) {
+		return false
+	}
+	return true
+}
+
+// HasNonSessionWork reports whether any bead in items is really WORK (skipping
+// session beads and addressed mail — see IsWorkItem). Shared filter for the
 // boolean readiness/open probes.
 func (w workAssignment) HasNonSessionWork(items []beads.Bead) bool {
 	for _, item := range items {
-		if sessionpkg.IsSessionBeadOrRepairable(item) {
+		if !w.IsWorkItem(item) {
 			continue
 		}
 		return true

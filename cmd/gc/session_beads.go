@@ -1002,7 +1002,7 @@ func unclaimWorkAssignedToRetiredSessionBead(
 					continue
 				}
 				for _, item := range work {
-					if session.IsSessionBeadOrRepairable(item) {
+					if !wa.IsWorkItem(item) {
 						continue
 					}
 					key := strconv.Itoa(storeIndex) + "\x00" + item.ID
@@ -1053,7 +1053,7 @@ func reassignWorkAssignedToRetiredSessionBead(
 					continue
 				}
 				for _, item := range work {
-					if session.IsSessionBeadOrRepairable(item) {
+					if !wa.IsWorkItem(item) {
 						continue
 					}
 					key := strconv.Itoa(storeIndex) + "\x00" + item.ID
@@ -1100,7 +1100,7 @@ func reassignWorkAssignedToRetiredSessionInfo(
 					continue
 				}
 				for _, item := range work {
-					if session.IsSessionBeadOrRepairable(item) {
+					if !wa.IsWorkItem(item) {
 						continue
 					}
 					key := strconv.Itoa(storeIndex) + "\x00" + item.ID
@@ -1149,7 +1149,7 @@ func unclaimWorkAssignedToRetiredSessionInfo(
 					continue
 				}
 				for _, item := range work {
-					if session.IsSessionBeadOrRepairable(item) {
+					if !wa.IsWorkItem(item) {
 						continue
 					}
 					key := strconv.Itoa(storeIndex) + "\x00" + item.ID
@@ -3049,7 +3049,7 @@ func releaseWorkFromClosedSessionBead(store beads.Store, sessionBead beads.Bead,
 				continue
 			}
 			for _, item := range work {
-				if session.IsSessionBeadOrRepairable(item) {
+				if !wa.IsWorkItem(item) {
 					continue
 				}
 				if _, dup := seenWork[item.ID]; dup {
