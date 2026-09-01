@@ -215,6 +215,7 @@ func TestApplyAgentPatchCoversAllFields(t *testing.T) {
 		MaxActiveSessions:       intVal(5),
 		MinActiveSessions:       intVal(1),
 		ScaleCheck:              strVal("echo 3"),
+		ScaleCheckAuthoritative: boolPtr(true),
 		OptionDefaults:          map[string]string{"model": "sonnet"},
 	}
 
@@ -369,6 +370,7 @@ func TestApplyAgentOverrideCoversAllFields(t *testing.T) {
 		MaxActiveSessions:       intVal(5),
 		MinActiveSessions:       intVal(1),
 		ScaleCheck:              strVal("echo 3"),
+		ScaleCheckAuthoritative: boolPtr(true),
 		OptionDefaults:          map[string]string{"model": "sonnet"},
 	}
 
