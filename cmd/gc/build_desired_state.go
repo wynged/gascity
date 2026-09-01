@@ -2453,10 +2453,37 @@ func mergeCollectedDemand(cfg *config.City, in collectedDemand) mergedDemand {
 			scaleCheckCounts = make(map[string]int)
 		}
 		scaleCheckDemandByTemplate = make(map[string]scaleCheckDemand)
+		// Templates that DECLARED their custom scale_check authoritative and
+		// got a clean answer from it this pass. Read from the custom results
+		// alone, before the default probe merges into the same counts below.
+		// A partial (non-zero exit, timeout, unbuildable env) is NOT a clean
+		// zero and keeps falling through to the cold-wake probe.
+		authoritativeScaleCheck := make(map[string]bool, len(in.CustomCounts))
+		for template := range in.CustomCounts {
+			if in.CustomPartials[template] {
+				continue
+			}
+			if agent := findAgentByTemplate(cfg, template); agent != nil && agent.ScaleCheckAuthoritative {
+				authoritativeScaleCheck[template] = true
+			}
+		}
 		for template, count := range in.DefaultCounts {
 			// A cold-pool wake probe only wakes the pool from zero; clamp its
 			// contribution to 1 so it never overrides a custom scale_check's
 			// authoritative count for the same template.
+			//
+			// Clamping alone does not deliver that: the merge is a max(), so
+			// max(custom 0, probe 1) is 1, and a custom check could never answer
+			// "no demand" while its pool was cold, the only time this probe runs.
+			// The pool drained, the next pass woke it, and the woken worker found
+			// nothing its own check judged actionable (lookout/hand 2026-08-31:
+			// 43 cold starts and orphan drains in 40 minutes). The probe is still
+			// right for a rig-scoped check that cannot see work routed to it in
+			// the city store (TestBuildDesiredState_ScaleFromZero_CrossRig), so
+			// skipping it is opt-in per agent via scale_check_authoritative.
+			if in.ColdWakeTemplates[template] && authoritativeScaleCheck[template] {
+				continue
+			}
 			if in.ColdWakeTemplates[template] && count > 1 {
 				count = 1
 			}
