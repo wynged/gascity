@@ -111,6 +111,56 @@ if [ -z "$AGENTS" ]; then
     exit 0
 fi
 
+# Step 2a: Identities of every crew member bound by a [[named_session]] block.
+#
+# These are known agents as a matter of CONFIGURATION, and the distinction
+# matters because nothing else in is_known_agent can say so. AGENTS above is
+# built from `gc config explain`, which prints agent TEMPLATES
+# (rig/crew-lookout, rig/hand); a named session is a BINDING onto a template
+# and never appears there, and `gc agent list` omits them too. The only arm
+# that used to cover them was live_session_match, which asks whether a session
+# row could be read from `gc session list` at this instant.
+#
+# Resting that on a per-sweep read is what makes the failure so bad when it
+# comes: a short read exits 0 like a good one, so every named assignee in the
+# city turns into an orphan on the same pass and their in-flight work is reset
+# to open/unassigned together. That is not hypothetical — 39 such releases are
+# on the record across this city's stores, every one of them a named crew
+# member or an ephemeral session and not one a pool instance, and the dropped
+# dispatches were never noticed because nothing logs a release to the bead.
+#
+# An on_demand crew member is asleep almost all the time by design, and being
+# asleep is precisely the state a dispatch is meant to wake it out of. So
+# liveness is the wrong question for these; "is it in the config" is the right
+# one, and it cannot come back short. Same reasoning as the "human" guard.
+NAMED_SESSIONS=$(gc config show 2>/dev/null | awk '
+    # Emit the block we were in before starting the next one: this rule runs
+    # before the generic header rule below and would otherwise skip it.
+    /^\[\[named_session\]\]/ { if (in_block) emit(); in_block = 1; name = ""; dir = ""; next }
+    /^\[/ { if (in_block) { emit(); in_block = 0 } }
+    in_block && /^[[:space:]]*name[[:space:]]*=/ { name = value($0) }
+    in_block && /^[[:space:]]*dir[[:space:]]*=/  { dir  = value($0) }
+    END { if (in_block) emit() }
+    function value(line,   v) {
+        v = line
+        sub(/^[^=]*=[[:space:]]*/, "", v)
+        gsub(/^"|"$/, "", v)
+        return v
+    }
+    function emit() {
+        if (name == "") return
+        print name
+        if (dir != "") {
+            # Both spellings the city uses for one crew member: the alias
+            # (rig/name) that dispatch writes, and the session name
+            # (rig--name) that `bd update --claim` writes from BEADS_ACTOR.
+            # Both have been released in the wild, so both must be known.
+            print dir "/" name
+            print dir "--" name
+        }
+    }
+') || NAMED_SESSIONS=""
+
 # Step 2b: Parse identities of every session row that `gc session list --json`
 # reports as open so that pool-spawned ephemeral assignees (e.g.
 # gastown__polekitten-gc-q9j0om) are treated as known. The Go-side
@@ -160,6 +210,12 @@ LIVE_SESSION_IDS=$(jq -r -s '
 agent_exists() {
     local candidate="$1"
     [ -n "$candidate" ] && printf '%s\n' "$AGENTS" | grep -Fxq -- "$candidate"
+}
+
+named_session_exists() {
+    local candidate="$1"
+    [ -n "$candidate" ] && [ -n "$NAMED_SESSIONS" ] \
+        && printf '%s\n' "$NAMED_SESSIONS" | grep -Fxq -- "$candidate"
 }
 
 live_session_match() {
@@ -293,6 +349,10 @@ is_known_agent() {
     # claim. Exact match only: agents that merely start with "human" still
     # resolve through the normal paths below.
     if [ "$name" = "human" ]; then return 0; fi
+    # A crew member bound in city.toml, awake or asleep. Checked before the
+    # liveness arms below precisely so a short session-list read cannot
+    # demote one to "dead agent" (Step 2a).
+    if named_session_exists "$name"; then return 0; fi
     # Direct match against a configured agent template name.
     if agent_exists "$name"; then return 0; fi
     # Pool instance: strip trailing -<digits> and check template name.
