@@ -88,6 +88,7 @@ type mergeEndState struct {
 	readyLost      map[string]struct{}
 	state          cacheState
 	lastFreshAt    time.Time
+	firstFreshAt   time.Time
 	mutationSeq    uint64
 	primeErr       string
 	syncFailures   int
@@ -296,6 +297,7 @@ func captureEndState(c *CachingStore) mergeEndState {
 		readyLost:            cloneDirty(c.readyProjectionLost),
 		state:                c.state,
 		lastFreshAt:          c.lastFreshAt,
+		firstFreshAt:         c.firstFreshAt,
 		mutationSeq:          c.mutationSeq,
 		primeErr:             primeErr,
 		syncFailures:         c.syncFailures,

@@ -278,7 +278,16 @@ func (c *CachingStore) nextReconcileDelay(now time.Time) time.Duration {
 
 	lastFullScanAt := c.stats.LastReconcileAt
 	if lastFullScanAt.IsZero() {
-		lastFullScanAt = c.lastFreshAt
+		// No full scan yet: anchor on the FIRST fresh mark (the prime), not the
+		// latest one. lastFreshAt moves on every write-through, so a store that
+		// is written more often than its cadence would never come due and
+		// beads created outside this process would stay invisible until the
+		// next boot. firstFreshAt is zero only when a test sets lastFreshAt
+		// directly; fall back to lastFreshAt then.
+		lastFullScanAt = c.firstFreshAt
+		if lastFullScanAt.IsZero() {
+			lastFullScanAt = c.lastFreshAt
+		}
 	}
 	dueAt := lastFullScanAt.Add(c.adaptiveIntervalLocked())
 	if !now.Before(dueAt) {

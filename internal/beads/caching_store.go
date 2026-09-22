@@ -29,16 +29,22 @@ type CachingStore struct {
 	backing  Store // runtime: usually *BdStore; tests and projections may use any Store
 	idPrefix string
 
-	mu                  sync.RWMutex
-	beads               map[string]Bead
-	deps                map[string][]Dep
-	depsComplete        bool
-	dirty               map[string]struct{}
-	beadSeq             map[string]uint64
-	localBeadAt         map[string]time.Time
-	deletedSeq          map[string]uint64
-	state               cacheState
-	lastFreshAt         time.Time
+	mu           sync.RWMutex
+	beads        map[string]Bead
+	deps         map[string][]Dep
+	depsComplete bool
+	dirty        map[string]struct{}
+	beadSeq      map[string]uint64
+	localBeadAt  map[string]time.Time
+	deletedSeq   map[string]uint64
+	state        cacheState
+	lastFreshAt  time.Time
+	// firstFreshAt is the first time the cache was marked fresh (the prime).
+	// nextReconcileDelay anchors the FIRST full scan on it: every write-through
+	// bumps lastFreshAt, so a store written more often than its cadence would
+	// otherwise never see its first scan come due and external writes would
+	// stay invisible until the next boot (city_hy ch store, 2026-09-19..22).
+	firstFreshAt        time.Time
 	mutationSeq         uint64
 	observationRevision uint64
 	primePartialErr     error
@@ -1370,6 +1376,9 @@ func (c *CachingStore) IsLive() bool {
 func (c *CachingStore) Backing() Store { return c.backing }
 
 func (c *CachingStore) markFreshLocked(now time.Time) {
+	if c.firstFreshAt.IsZero() {
+		c.firstFreshAt = now
+	}
 	c.lastFreshAt = now
 	c.stats.LastFreshAt = now
 }

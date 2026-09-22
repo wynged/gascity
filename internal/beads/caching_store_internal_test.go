@@ -4568,3 +4568,38 @@ func TestCachingStoreReadyReturnsCanonicalOrder(t *testing.T) {
 		t.Fatalf("cachedReadyOnly limit-3 order = %v, want %v", ids, want[:3])
 	}
 }
+
+// TestNextReconcileDelayFirstScanNotDeferredByWriteThrough pins the regression
+// behind city_hy's frozen city store (2026-09-19..22): before the first full
+// scan, every write-through bumped lastFreshAt, so a store written more often
+// than its cadence never came due and beads created outside the process stayed
+// invisible until the next boot. The first scan must anchor on the first fresh
+// mark (the prime), whatever writes arrive afterwards.
+func TestNextReconcileDelayFirstScanNotDeferredByWriteThrough(t *testing.T) {
+	t.Parallel()
+
+	cache := NewCachingStoreForTest(NewMemStore(), nil)
+	cache.mu.Lock()
+	cache.state = cacheLive
+	cache.markFreshLocked(time.Unix(100, 0)) // prime
+	for s := int64(105); s <= 125; s += 5 {  // write-through every 5s
+		cache.markFreshLocked(time.Unix(s, 0))
+	}
+	cache.mu.Unlock()
+
+	if got := cache.nextReconcileDelay(time.Unix(126, 0)); got != 4*time.Second {
+		t.Fatalf("nextReconcileDelay(before first scan, fresh writes) = %s, want 4s from the prime anchor", got)
+	}
+	if got := cache.nextReconcileDelay(time.Unix(130, 0)); got != 0 {
+		t.Fatalf("nextReconcileDelay(first scan due) = %s, want immediate reconcile", got)
+	}
+
+	// After the first full scan the existing anchor (LastReconcileAt) applies.
+	cache.mu.Lock()
+	cache.stats.LastReconcileAt = time.Unix(130, 0)
+	cache.markFreshLocked(time.Unix(150, 0))
+	cache.mu.Unlock()
+	if got := cache.nextReconcileDelay(time.Unix(151, 0)); got != 9*time.Second {
+		t.Fatalf("nextReconcileDelay(after first scan) = %s, want 9s from LastReconcileAt", got)
+	}
+}
