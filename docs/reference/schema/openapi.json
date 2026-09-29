@@ -425,6 +425,12 @@
               "null"
             ]
           },
+          "ScaleCheckAuthoritative": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
           "Scope": {
             "type": [
               "string",
@@ -590,7 +596,8 @@
           "InjectFragmentsAppend",
           "MaxActiveSessions",
           "MinActiveSessions",
-          "ScaleCheck"
+          "ScaleCheck",
+          "ScaleCheckAuthoritative"
         ],
         "type": "object"
       },
