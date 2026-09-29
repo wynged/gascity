@@ -30,6 +30,9 @@ func diffEndStates(want, got mergeEndState) string {
 	if !want.lastFreshAt.Equal(got.lastFreshAt) {
 		fmt.Fprintf(&b, "  lastFreshAt: want=%v got=%v\n", want.lastFreshAt, got.lastFreshAt)
 	}
+	if !want.firstFreshAt.Equal(got.firstFreshAt) {
+		fmt.Fprintf(&b, "  firstFreshAt: want=%v got=%v\n", want.firstFreshAt, got.firstFreshAt)
+	}
 	if want.mutationSeq != got.mutationSeq {
 		fmt.Fprintf(&b, "  mutationSeq: want=%v got=%v\n", want.mutationSeq, got.mutationSeq)
 	}
