@@ -402,6 +402,12 @@
               "null"
             ]
           },
+          "ScaleCheckAuthoritative": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
           "Scope": {
             "type": [
               "string",
@@ -571,6 +577,7 @@
           "MaxActiveSessions",
           "MinActiveSessions",
           "ScaleCheck",
+          "ScaleCheckAuthoritative",
           "OptionDefaults"
         ],
         "type": "object"
