@@ -212,7 +212,19 @@ func TestStartCommandStaleResumeKey(t *testing.T) {
 			if err != nil {
 				t.Fatalf("startCommand: %v", err)
 			}
-			want := "mycmd " + tt.wantFlag + " " + info.SessionKey
+			wantKey := info.SessionKey
+			if tt.wantFlag == "--session-id" {
+				// A missing transcript retires the stored key and mints a new one (ch-uvh0).
+				bead, err := store.Get(info.ID)
+				if err != nil {
+					t.Fatalf("Get: %v", err)
+				}
+				wantKey = bead.Metadata["session_key"]
+				if wantKey == "" || wantKey == info.SessionKey {
+					t.Fatalf("session_key after stale clear = %q, want a new key (old %q)", wantKey, info.SessionKey)
+				}
+			}
+			want := "mycmd " + tt.wantFlag + " " + wantKey
 			if got != want {
 				t.Fatalf("startCommand() = %q, want %q", got, want)
 			}
@@ -269,7 +281,19 @@ func TestStartCommandClaudeConfigDir(t *testing.T) {
 			if err != nil {
 				t.Fatalf("startCommand: %v", err)
 			}
-			want := "mycmd " + tt.wantFlag + " " + info.SessionKey
+			wantKey := info.SessionKey
+			if tt.wantFlag == "--session-id" {
+				// A missing transcript retires the stored key and mints a new one (ch-uvh0).
+				bead, err := store.Get(info.ID)
+				if err != nil {
+					t.Fatalf("Get: %v", err)
+				}
+				wantKey = bead.Metadata["session_key"]
+				if wantKey == "" || wantKey == info.SessionKey {
+					t.Fatalf("session_key after stale clear = %q, want a new key (old %q)", wantKey, info.SessionKey)
+				}
+			}
+			want := "mycmd " + tt.wantFlag + " " + wantKey
 			if got != want {
 				t.Fatalf("startCommand() = %q, want %q", got, want)
 			}

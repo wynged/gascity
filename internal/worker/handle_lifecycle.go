@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"path/filepath"
 	"strings"
 
@@ -826,17 +827,10 @@ func (h *SessionHandle) startCommand(id string) (string, error) {
 	if resumeCommand := strings.TrimSpace(h.session.Resume.ResumeCommand); resumeCommand != "" {
 		resumeInfo.ResumeCommand = resumeCommand
 	}
-	isClaude := strings.Contains(strings.ToLower(strings.TrimSpace(resumeInfo.Provider)), "claude")
-	probePaths := h.searchPaths
-	if len(probePaths) == 0 || !isClaude {
-		probePaths = DefaultSearchPaths()
-	}
-	if dir := strings.TrimSpace(h.session.Env["CLAUDE_CONFIG_DIR"]); isClaude && filepath.IsAbs(dir) {
-		probePaths = MergeSearchPaths(append(append([]string(nil), probePaths...), filepath.Join(dir, "projects")))
-	}
-	present, probeable := workertranscript.HasKeyedTranscript(probePaths, resumeInfo.Provider, resumeInfo.WorkDir, resumeInfo.SessionKey)
-	if probeable && !present && h.session.Resume.SessionIDFlag != "" {
-		return startCommandWithSessionID(resumeInfo, h.session)
+	if fresh, ok, err := h.freshCommandForStaleResumeKey(id, resumeInfo); err != nil {
+		return "", err
+	} else if ok {
+		return fresh, nil
 	}
 	return sessionpkg.BuildResumeCommand(resumeInfo), nil
 }
@@ -856,6 +850,74 @@ func startCommandWithSessionID(info sessionpkg.Info, spec SessionSpec) (string, 
 		return "", fmt.Errorf("%w: command is required to start session", ErrHandleConfig)
 	}
 	return command + " " + spec.Resume.SessionIDFlag + " " + info.SessionKey, nil
+}
+
+// resumeTranscriptProbe reports whether the keyed transcript a resume would
+// reattach to is on disk (present) and whether the provider's keyed transcript
+// can be probed at all (probeable). A package var so tests can model a missing
+// transcript without building provider-specific trees.
+var resumeTranscriptProbe = func(searchPaths []string, provider, workDir, sessionKey string) (present, probeable bool) {
+	return workertranscript.HasKeyedTranscript(searchPaths, provider, workDir, sessionKey)
+}
+
+// freshCommandForStaleResumeKey is the worker-handle twin of the reconciler's
+// pre-flight stale-resume guard (session_lifecycle_parallel.go). A resume is
+// about to reattach to resumeInfo.SessionKey; if the provider's keyed
+// transcript for that key is provably gone, the resume would exit at once
+// (claude: "No conversation found") and the pane would die, every wake, until
+// someone reset the seat by hand (ch-uvh0). wake_mode=fresh does not cover it:
+// a session killed rather than slept keeps its key with
+// continuation_reset_pending=true and reset_committed_at empty.
+//
+// Instead: clear the key on the bead (StaleResumeKeyResetPatch, the same reset
+// the reconciler applies) so the bead stops naming a conversation that no
+// longer exists and the launch counts as a first start, and launch fresh --
+// with a newly minted key when the provider takes a session-id flag, else with
+// the bare command. Providers whose keyed transcript cannot be probed are left
+// alone.
+//
+// The probe roots follow upstream #8514 and the reconciler: claude-family
+// providers search the handle's search paths, other providers the defaults,
+// and an absolute CLAUDE_CONFIG_DIR adds <dir>/projects, without which a real
+// transcript under a custom config dir would read as missing.
+func (h *SessionHandle) freshCommandForStaleResumeKey(id string, resumeInfo sessionpkg.Info) (string, bool, error) {
+	key := strings.TrimSpace(resumeInfo.SessionKey)
+	if key == "" || (resumeInfo.ResumeFlag == "" && resumeInfo.ResumeCommand == "") {
+		return "", false, nil
+	}
+	provider := strings.TrimSpace(resumeInfo.Provider)
+	if kind := strings.TrimSpace(resumeInfo.ProviderKind); kind != "" && !workertranscript.ProviderHasKeyedTranscript(provider) {
+		provider = kind
+	}
+	isClaude := strings.Contains(strings.ToLower(provider), "claude")
+	probePaths := h.searchPaths
+	if len(probePaths) == 0 || !isClaude {
+		probePaths = DefaultSearchPaths()
+	}
+	if dir := strings.TrimSpace(h.session.Env["CLAUDE_CONFIG_DIR"]); isClaude && filepath.IsAbs(dir) {
+		probePaths = MergeSearchPaths(append(append([]string(nil), probePaths...), filepath.Join(dir, "projects")))
+	}
+	present, probeable := resumeTranscriptProbe(probePaths, provider, resumeInfo.WorkDir, key)
+	if !probeable || present {
+		return "", false, nil
+	}
+	if err := h.manager.ClearStaleResumeKey(id); err != nil {
+		return "", false, fmt.Errorf("clearing stale resume key: %w", err)
+	}
+	log.Printf("session %s: keyed transcript for session_key %s is gone; cleared the key and starting fresh instead of resuming (provider=%s)", id, key, provider)
+	resumeInfo.SessionKey = ""
+	command := sessionpkg.BuildResumeCommand(resumeInfo)
+	if flag := strings.TrimSpace(h.session.Resume.SessionIDFlag); flag != "" {
+		newKey, err := sessionpkg.GenerateSessionKey()
+		if err != nil {
+			return "", false, fmt.Errorf("generating session key: %w", err)
+		}
+		if err := h.manager.PersistSessionKey(id, newKey); err != nil {
+			return "", false, err
+		}
+		command += " " + flag + " " + newKey
+	}
+	return command, true, nil
 }
 
 func firstProviderSessionStart(state sessionpkg.State, metadata map[string]string) bool {
