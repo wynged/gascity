@@ -7975,7 +7975,7 @@ func TestJsonlExportSkipsSpikeCheckBelowMinPrev(t *testing.T) {
 	if err != nil && !os.IsNotExist(err) {
 		t.Fatalf("ReadFile(mail log): %v", err)
 	}
-	if strings.Contains(string(mailData), "ESCALATION: JSONL spike") {
+	if strings.Contains(string(mailData), "ESCALATION: JSONL row-count") {
 		t.Fatalf("spike escalation fired despite prev<MIN_PREV; mail log:\n%s", mailData)
 	}
 }
@@ -8000,7 +8000,7 @@ func TestJsonlExportSuppressesDropSpikeWhenDoltSourceCountHealthy(t *testing.T) 
 	if err != nil && !os.IsNotExist(err) {
 		t.Fatalf("ReadFile(mail log): %v", err)
 	}
-	if strings.Contains(string(mailData), "ESCALATION: JSONL spike") {
+	if strings.Contains(string(mailData), "ESCALATION: JSONL row-count") {
 		t.Fatalf("spike escalation fired despite healthy Dolt source-of-truth count; mail log:\n%s", mailData)
 	}
 
@@ -8036,7 +8036,7 @@ func TestJsonlExportPreservesDropSpikeWhenDoltSourceCountAlsoShrank(t *testing.T
 	if err != nil && !os.IsNotExist(err) {
 		t.Fatalf("ReadFile(mail log): %v", err)
 	}
-	if !strings.Contains(string(mailData), "ESCALATION: JSONL spike") {
+	if !strings.Contains(string(mailData), "ESCALATION: JSONL row-count") {
 		t.Fatalf("expected spike escalation when Dolt source-of-truth count also shrank; mail log:\n%s", mailData)
 	}
 
@@ -8074,7 +8074,7 @@ func TestJsonlExportCommitsOnHaltToAdvanceBaseline(t *testing.T) {
 	if err != nil && !os.IsNotExist(err) {
 		t.Fatalf("ReadFile(mail log): %v", err)
 	}
-	if !strings.Contains(string(mailData), "ESCALATION: JSONL spike") {
+	if !strings.Contains(string(mailData), "ESCALATION: JSONL row-count") {
 		t.Fatalf("expected spike escalation as preconditions for the HALT-baseline test; mail log:\n%s", mailData)
 	}
 
@@ -8136,7 +8136,7 @@ func TestJsonlExportFirstRunWithDisabledFloorSkipsSpikeCheck(t *testing.T) {
 	runScript(t, coreScriptPath("jsonl-export.sh"), env)
 
 	// Should not have escalated (no prior baseline).
-	if mailData, _ := os.ReadFile(mailLog); strings.Contains(string(mailData), "ESCALATION: JSONL spike") {
+	if mailData, _ := os.ReadFile(mailLog); strings.Contains(string(mailData), "ESCALATION: JSONL row-count") {
 		t.Fatalf("first run with disabled floor must not escalate; mail log:\n%s", mailData)
 	}
 	// Sanity: the success summary nudge fired (script reached the end).
@@ -8212,7 +8212,7 @@ func TestJsonlExportScrubTrueFiltersRowsWithoutDroppingWholePayload(t *testing.T
 	if err != nil && !os.IsNotExist(err) {
 		t.Fatalf("ReadFile(mail log): %v", err)
 	}
-	if strings.Contains(string(mailData), "ESCALATION: JSONL spike") {
+	if strings.Contains(string(mailData), "ESCALATION: JSONL row-count") {
 		t.Fatalf("row-level scrub should preserve legitimate rows and avoid false spikes; mail log:\n%s", mailData)
 	}
 
@@ -8345,7 +8345,7 @@ func TestJsonlExportDeletedHeadBaselineSkipsPreviousCountLookup(t *testing.T) {
 
 	runScript(t, coreScriptPath("jsonl-export.sh"), env)
 
-	if mailData, _ := os.ReadFile(mailLog); strings.Contains(string(mailData), "ESCALATION: JSONL spike") {
+	if mailData, _ := os.ReadFile(mailLog); strings.Contains(string(mailData), "ESCALATION: JSONL row-count") {
 		t.Fatalf("deleted HEAD baseline should behave like no baseline; mail log:\n%s", mailData)
 	}
 	gcData, err := os.ReadFile(gcLog)
@@ -8568,7 +8568,7 @@ func TestJsonlExportHaltMailFailurePersistsPendingAlertAndRetriesNextRun(t *test
 	if err != nil {
 		t.Fatalf("ReadFile(mail log): %v", err)
 	}
-	if !strings.Contains(string(mailData), "ESCALATION: JSONL spike") {
+	if !strings.Contains(string(mailData), "ESCALATION: JSONL row-count") {
 		t.Fatalf("expected initial failed mail attempt to be logged, got:\n%s", mailData)
 	}
 
@@ -8589,7 +8589,7 @@ func TestJsonlExportHaltMailFailurePersistsPendingAlertAndRetriesNextRun(t *test
 	if err != nil {
 		t.Fatalf("ReadFile(mail log): %v", err)
 	}
-	if got := strings.Count(string(mailData), "ESCALATION: JSONL spike"); got != 2 {
+	if got := strings.Count(string(mailData), "ESCALATION: JSONL row-count"); got != 2 {
 		t.Fatalf("expected one failed attempt and one retry delivery, got %d entries:\n%s", got, mailData)
 	}
 }
@@ -9787,7 +9787,7 @@ func TestJsonlExportRetriesPendingAlertFromBackupAfterPrimaryCorruption(t *testi
 	if err != nil {
 		t.Fatalf("ReadFile(mail log): %v", err)
 	}
-	if got := strings.Count(string(mailData), "ESCALATION: JSONL spike"); got != 2 {
+	if got := strings.Count(string(mailData), "ESCALATION: JSONL row-count"); got != 2 {
 		t.Fatalf("expected failed attempt plus backup-backed retry, got %d entries:\n%s", got, mailData)
 	}
 
@@ -9824,7 +9824,7 @@ func TestJsonlExportRetriesPendingAlertWithoutReachableScopes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadFile(mail log): %v", err)
 	}
-	if got := strings.Count(string(mailData), "ESCALATION: JSONL spike"); got != 1 {
+	if got := strings.Count(string(mailData), "ESCALATION: JSONL row-count"); got != 1 {
 		t.Fatalf("expected pending spike alert retry on empty-db run, got %d entries:\n%s", got, mailData)
 	}
 
@@ -9861,7 +9861,7 @@ func TestJsonlExportRetriesMultiplePendingAlertsWithoutReachableScopes(t *testin
 	if err != nil {
 		t.Fatalf("ReadFile(mail log): %v", err)
 	}
-	if got := strings.Count(string(mailData), "ESCALATION: JSONL spike"); got != 2 {
+	if got := strings.Count(string(mailData), "ESCALATION: JSONL row-count"); got != 2 {
 		t.Fatalf("expected both pending spike alerts to retry, got %d entries:\n%s", got, mailData)
 	}
 	if !strings.Contains(string(mailData), "Database: alpha") || !strings.Contains(string(mailData), "Database: beta") {
