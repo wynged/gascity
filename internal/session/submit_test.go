@@ -2187,7 +2187,7 @@ func TestSubmitDefaultDeferredRestartRequestedLeavesWakeToController(t *testing.
 	if err := store.SetMetadataBatch(info.ID, map[string]string{"restart_requested": "true"}); err != nil {
 		t.Fatalf("SetMetadataBatch: %v", err)
 	}
-	outcome, err := mgr.Submit(context.Background(), info.ID, "after restart", BuildResumeCommand(info), runtime.Config{WorkDir: info.WorkDir}, SubmitIntentDefault)
+	outcome, err := mgr.Submit(context.Background(), testActor(mgr, ActorOperator), info.ID, "after restart", BuildResumeCommand(info), runtime.Config{WorkDir: info.WorkDir}, SubmitIntentDefault)
 	if err != nil {
 		t.Fatalf("Submit(default): %v", err)
 	}
