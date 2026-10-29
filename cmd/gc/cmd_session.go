@@ -1971,7 +1971,7 @@ func cmdSessionClose(args []string, key string, stdout, stderr io.Writer, asJSON
 	// retirement gives it; a claim no lane serves stays on the closed row and
 	// raises session.stranded_claims, which the controller's detector repeats.
 	legs := workLegsFromCensus(cityPath, cfg, cityWorkLegOf(beads.WorkStore{Store: store}), rigStores)
-	out := unclaimWorkAssignedToRetiredSessionBeadVia(legs, sessStore, closedSessionBead, retiredSessionFallbackRoute(closedSessionBead), stderr)
+	out := unclaimWorkAssignedToRetiredSessionBeadExcept(legs, sessStore, closedSessionBead, retiredSessionFallbackRoute(closedSessionBead), namedIdentityOutlivesClose(closedSessionBead, cfg, cityPath), stderr)
 	if cityErr == nil {
 		strand(&strandedClaimAlerts{rec: openCityRecorderAt(cityPath, stderr)}, releaseSeatOfBead(closedSessionBead), "manual", out, time.Now(), stderr)
 	}
@@ -1982,6 +1982,22 @@ func cmdSessionClose(args []string, key string, stdout, stderr io.Writer, asJSON
 	op.finishErr(nil)
 	op.noteReplayByID(args[0])
 	return emitSessionCloseResult(stdout, stderr, asJSON, sessionID, len(closeResult.WaitNudgeIDs), op)
+}
+
+// namedIdentityOutlivesClose is the identity a manual close keeps work under:
+// a configured named session's identity, while its spec is still configured.
+// The identity outlives the conversation the close ends: the seat comes back
+// under the same name (a nap is a close and a fresh submit), and its next
+// session reads its assignee to carry on, as an agent's suspend keeps a
+// configured named row's work for its return. Released, the work was
+// re-routed to the template's pool and claimed by a pool instance the city
+// never named. Work held under the conversation's own ID or session name is
+// released as before; a named session removed from config keeps nothing.
+func namedIdentityOutlivesClose(b beads.Bead, cfg *config.City, cityPath string) map[string]struct{} {
+	if !configuredNamedSessionBeadHasSpec(b, cfg, loadedCityName(cfg, cityPath)) {
+		return nil
+	}
+	return map[string]struct{}{namedSessionIdentity(b): {}}
 }
 
 // emitSessionCloseResult prints a close's success output, a replay's included.
