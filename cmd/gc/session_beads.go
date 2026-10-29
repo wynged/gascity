@@ -1253,6 +1253,21 @@ func unclaimWorkAssignedToRetiredSessionBeadVia(
 	fallbackRoute string,
 	stderr io.Writer,
 ) ReleaseOutcome {
+	return unclaimWorkAssignedToRetiredSessionBeadExcept(legs, sessionStore, sessionBead, fallbackRoute, nil, stderr)
+}
+
+// unclaimWorkAssignedToRetiredSessionBeadExcept is
+// unclaimWorkAssignedToRetiredSessionBeadVia with the identities in preserve
+// dropped from the release scope, so work assigned under them keeps its
+// assignee (as closeBeadPreservingAssignees keeps them on the cascade).
+func unclaimWorkAssignedToRetiredSessionBeadExcept(
+	legs WorkLegs,
+	sessionStore beads.Store,
+	sessionBead beads.Bead,
+	fallbackRoute string,
+	preserve map[string]struct{},
+	stderr io.Writer,
+) ReleaseOutcome {
 	if sessionStore == nil || strings.TrimSpace(sessionBead.ID) == "" {
 		return ReleaseOutcome{}
 	}
@@ -1267,7 +1282,7 @@ func unclaimWorkAssignedToRetiredSessionBeadVia(
 	if err := clearSessionCurrentClaim(sessionStore, sessionBead.ID); err != nil {
 		fmt.Fprintf(stderr, "session beads: clearing current claim on retired session %s: %v\n", sessionBead.ID, err) //nolint:errcheck
 	}
-	scope := releaseScopeOwn(sessionBead)
+	scope := releaseScopeOwn(sessionBead).except(preserve)
 	seat := releaseSeatOfBead(sessionBead)
 	seat.fallback = fallbackRoute // "" keeps whatever routing each claim carries
 	out, err := ReleaseClaims(seatWorkFor(legs, scope), scope, seat, releaseRetired, ReleaseOpts{})

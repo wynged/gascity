@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"io"
 	"os"
 	"path/filepath"
 	"slices"
@@ -301,5 +302,106 @@ func TestCmdSessionCloseWithoutConfigRefusesOnlyOverClaims(t *testing.T) {
 				t.Fatalf("cmdSessionClose = %d, stderr %q; want refused %t", code, stderr.String(), holds)
 			}
 		})
+	}
+}
+
+// TestCmdSessionCloseKeepsAConfiguredNamedSessionsWork is ch-hb30. A nap is a
+// manual close and a fresh submit, and a configured named seat's next session
+// reads its assignee to carry on. The close released the in_progress bead
+// assigned to the named identity, stamped the template's pool route as its
+// fallback, and a pool instance of the template the city never named claimed
+// it. Work assigned under the named identity stays assigned and unrouted;
+// work held under the conversation's own ID is released as before.
+func TestCmdSessionCloseKeepsAConfiguredNamedSessionsWork(t *testing.T) {
+	cityDir := t.TempDir()
+	writePhase0InterfaceCity(t, cityDir, `[workspace]
+name = "test-city"
+
+[beads]
+provider = "file"
+
+[[agent]]
+name = "crew"
+start_command = "true"
+
+[[named_session]]
+name = "taki"
+template = "crew"
+mode = "on_demand"
+`)
+	t.Setenv("GC_CITY", cityDir)
+	t.Setenv("GC_DIR", t.TempDir())
+	t.Setenv("GC_BEADS", "file")
+	t.Setenv("GC_SESSION", "fake")
+
+	store, err := openCityStoreAt(cityDir)
+	if err != nil {
+		t.Fatalf("openCityStoreAt: %v", err)
+	}
+	sessionBead, err := store.Create(beads.Bead{
+		Title:  "taki",
+		Type:   session.BeadType,
+		Labels: []string{session.LabelSession},
+		Metadata: map[string]string{
+			"session_name":               "taki",
+			"template":                   "crew",
+			"state":                      "active",
+			namedSessionMetadataKey:      "true",
+			namedSessionIdentityMetadata: "taki",
+		},
+	})
+	if err != nil {
+		t.Fatalf("Create(session bead): %v", err)
+	}
+	cfg, cfgErr := cliCityConfig(cityDir, nil, io.Discard)
+	if cfgErr != nil {
+		t.Fatalf("cliCityConfig: %v", cfgErr)
+	}
+	if !configuredNamedSessionBeadHasSpec(sessionBead, cfg, loadedCityName(cfg, cityDir)) {
+		t.Fatalf("fixture: session bead %s does not resolve to the configured named session", sessionBead.ID)
+	}
+
+	inProgress := "in_progress"
+	create := func(title, assignee string) beads.Bead {
+		t.Helper()
+		b, err := store.Create(beads.Bead{Title: title, Type: "task", Assignee: assignee, Metadata: map[string]string{beadmeta.WorkBranchMetadataKey: "feat/" + title}})
+		if err != nil {
+			t.Fatalf("Create(%s): %v", title, err)
+		}
+		if err := store.Update(b.ID, beads.UpdateOpts{Status: &inProgress}); err != nil {
+			t.Fatalf("mark %s in_progress: %v", title, err)
+		}
+		return b
+	}
+	kept := create("roofs-a", "taki")
+	released := create("own-claim", sessionBead.ID)
+
+	var stdout, stderr bytes.Buffer
+	if code := cmdSessionClose([]string{sessionBead.ID}, "", &stdout, &stderr, false); code != 0 {
+		t.Fatalf("cmdSessionClose = %d, want 0; stdout=%s stderr=%s", code, stdout.String(), stderr.String())
+	}
+
+	reopened, err := openCityStoreAt(cityDir)
+	if err != nil {
+		t.Fatalf("reopen city store: %v", err)
+	}
+	got, err := reopened.Get(kept.ID)
+	if err != nil {
+		t.Fatalf("Get(%s): %v", kept.ID, err)
+	}
+	if got.Assignee != "taki" || got.Status != "in_progress" {
+		t.Errorf("named identity's work = assignee %q status %q, want taki in_progress (kept through the close)", got.Assignee, got.Status)
+	}
+	for _, k := range []string{beadmeta.RoutedToMetadataKey, beadmeta.RunTargetMetadataKey} {
+		if v := got.Metadata[k]; v != "" {
+			t.Errorf("named identity's work %s = %q, want unset (the template pool must not take it)", k, v)
+		}
+	}
+	gotOwn, err := reopened.Get(released.ID)
+	if err != nil {
+		t.Fatalf("Get(%s): %v", released.ID, err)
+	}
+	if gotOwn.Assignee != "" || gotOwn.Status != "open" {
+		t.Errorf("conversation's own claim = assignee %q status %q, want released (empty, open)", gotOwn.Assignee, gotOwn.Status)
 	}
 }
