@@ -10,7 +10,7 @@ func TestWrapArgv(t *testing.T) {
 	w := &Wrapper{Probe: func(string) error { return nil }}
 	got := w.Wrap("gascity-infra.slice", []string{"dolt", "sql-server", "--config", "/c/config.yaml"})
 	want := []string{
-		"systemd-run", "--user", "--scope", "--slice=gascity-infra.slice", "--collect", "--quiet", "--",
+		"systemd-run", "--user", "--scope", "--slice=gascity-infra.slice", "--collect", "--quiet", "--expand-environment=no", "--",
 		"dolt", "sql-server", "--config", "/c/config.yaml",
 	}
 	if !slices.Equal(got, want) {
@@ -87,7 +87,7 @@ func TestScopeArgvNamesUnitAndDescription(t *testing.T) {
 		Description: "gascity infra: managed dolt for city /c",
 	}, []string{"dolt", "sql-server"})
 	want := []string{
-		"systemd-run", "--user", "--scope", "--slice=gascity-infra.slice", "--collect", "--quiet",
+		"systemd-run", "--user", "--scope", "--slice=gascity-infra.slice", "--collect", "--quiet", "--expand-environment=no",
 		"--unit=gascity-infra-0123456789abcdef.scope", "--description=gascity infra: managed dolt for city /c",
 		"--", "dolt", "sql-server",
 	}

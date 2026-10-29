@@ -203,7 +203,7 @@ func writeMarkingFakeDolt(t *testing.T) (string, string) {
 	return dir, marker
 }
 
-const infraScopePrefix = "--user --scope --slice=gascity-infra.slice --collect --quiet "
+const infraScopePrefix = "--user --scope --slice=gascity-infra.slice --collect --quiet --expand-environment=no "
 
 // infraUnitPattern is the transient scope unit name gc gives a scoped spawn.
 var infraUnitPattern = regexp.MustCompile(`^gascity-infra-[0-9a-f]{16}\.scope$`)

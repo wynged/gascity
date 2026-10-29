@@ -16,7 +16,7 @@ import (
 // user slice (e.g. "gascity-agents.slice"), makes the tmux provider wrap
 // every pane's initial command in a transient systemd user scope:
 //
-//	systemd-run --user --scope --slice=<slice> --collect --quiet -- sh -c '<command>'
+//	systemd-run --user --scope --slice=<slice> --collect --quiet --expand-environment=no -- sh -c '<command>'
 //
 // Rationale: systemd-enabled tmux builds (stock Ubuntu) move every pane into
 // a transient tmux-spawn-*.scope under the default user slice, so agent

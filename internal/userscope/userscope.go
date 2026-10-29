@@ -2,12 +2,14 @@
 //
 // A transient scope created with
 //
-//	systemd-run --user --scope --slice=<slice> --collect --quiet -- <argv>
+//	systemd-run --user --scope --slice=<slice> --collect --quiet --expand-environment=no -- <argv>
 //
 // moves the command's process tree into its own cgroup under <slice>, so a
 // cgroup-wide kill of whatever scope the caller runs in does not reach it.
 // systemd-run in scope mode registers its own PID and then execs argv, so
-// the spawned PID is the command's PID.
+// the spawned PID is the command's PID. --expand-environment=no keeps
+// systemd-run (v254+) from expanding ${VAR} in argv itself: a pane command
+// is a shell string whose ${...} belong to the shell inside the scope.
 //
 // When no systemd user manager is reachable (no systemd-run, no user bus,
 // non-Linux hosts), wrapping is a no-op: commands run unwrapped exactly as
@@ -49,8 +51,8 @@ func Argv(slice string, argv []string) []string {
 // ScopeArgv is [Argv] for a scope that may also carry a unit name and a
 // description.
 func ScopeArgv(s Scope, argv []string) []string {
-	out := make([]string, 0, 9+len(argv))
-	out = append(out, "systemd-run", "--user", "--scope", "--slice="+s.Slice, "--collect", "--quiet")
+	out := make([]string, 0, 10+len(argv))
+	out = append(out, "systemd-run", "--user", "--scope", "--slice="+s.Slice, "--collect", "--quiet", "--expand-environment=no")
 	if s.Unit != "" {
 		out = append(out, "--unit="+s.Unit)
 	}
