@@ -182,22 +182,28 @@ func askUserQuestionFooter(lines []string) int {
 }
 
 // askUserQuestionReviewEnd returns the row just below a review screen whose
-// fixed rows end the pane, or -1. Nothing may sit below them: an answered
-// review stays in scrollback above the agent's output or the composer.
+// fixed rows end the pane, or -1. Like the select footer, they may carry the
+// dialog's own trailing row (a named session's rule, "──── name ─"), but no
+// more: an answered review stays in scrollback above the agent's output or
+// the composer.
 func askUserQuestionReviewEnd(lines []string) int {
-	end, matched := -1, 0
+	end, matched, seen := -1, 0, 0
 	for i := len(lines) - 1; i >= 0 && matched < len(askUserQuestionReviewTail); i-- {
 		trimmed := strings.TrimSpace(lines[i])
 		if trimmed == "" {
 			continue
 		}
-		if !askUserQuestionReviewTail[matched].MatchString(trimmed) {
+		if askUserQuestionReviewTail[matched].MatchString(trimmed) {
+			if end < 0 {
+				end = i + 1
+			}
+			matched++
+			continue
+		}
+		seen++
+		if matched > 0 || seen >= askUserQuestionTailSpan || strings.HasPrefix(trimmed, "❯") || strings.HasPrefix(trimmed, ">") {
 			return -1
 		}
-		if end < 0 {
-			end = i + 1
-		}
-		matched++
 	}
 	if matched < len(askUserQuestionReviewTail) {
 		return -1

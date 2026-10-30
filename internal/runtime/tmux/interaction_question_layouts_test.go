@@ -11,7 +11,8 @@ import (
 )
 
 // The testdata/claude-question-menu panes are live captures (Claude Code
-// v2.1.314, 140x45, header path sanitized) of every AskUserQuestion screen a
+// v2.1.314, header path sanitized; named-* from an 80-column named session,
+// the rest 140x45 and unnamed) of every AskUserQuestion screen a
 // nudge can land on, plus the panes around them that must stay nudgeable.
 // idle-quotes-menu.txt is hand-made: an idle composer under tool output that
 // quotes a dialog's footer and options.
@@ -35,6 +36,9 @@ var questionMenuLayouts = []struct {
 	{"multi-q2.txt", true, "Small"},
 	// The review screen has no select footer; Enter submits the answers.
 	{"multi-review.txt", true, "Submit answers"},
+	// A named session draws a rule with its name below the dialog.
+	{"named-multi-q1.txt", true, "Red"},
+	{"named-multi-review.txt", true, "Submit answers"},
 	{"multiselect.txt", true, "[ ] Cheese"},
 	// A ticked option marks the tab ☒, and the cursor rests on the unnumbered
 	// Submit row.
