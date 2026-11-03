@@ -86,6 +86,15 @@ var (
 	// askUserQuestionCheckboxRe matches the checkbox a multi-select page
 	// draws before an option's label: "[ ]", or "[✔]" once ticked.
 	askUserQuestionCheckboxRe = regexp.MustCompile(`^\[.\](?:\s+|$)`)
+
+	// askUserQuestionCursorRe matches the focused unnumbered row below the
+	// options, a multiSelect dialog's Submit. Display only.
+	askUserQuestionCursorRe = regexp.MustCompile(`^❯\s+(.+)$`)
+
+	// askUserQuestionNameRuleRe matches the rule Claude Code draws under the
+	// dialog in a named session, carrying the session's name
+	// ("──────── project ─").
+	askUserQuestionNameRuleRe = regexp.MustCompile(`^─{2,}\s+\S.*\s─+$`)
 )
 
 // askUserQuestionPreviewHint is the hint the select footer carries when the
@@ -139,10 +148,24 @@ type parsedQuestion struct {
 // parseQuestionDialog returns the open AskUserQuestion dialog the pane lines
 // show — its question page or its review page — or nil when they show none.
 func parseQuestionDialog(lines []string) *parsedQuestion {
+	lines = trimSessionNameRule(lines)
 	if q := parseQuestionPage(lines); q != nil {
 		return q
 	}
 	return parseReviewPage(lines)
+}
+
+// trimSessionNameRule drops the named-session rule when it is the pane's last
+// row, so a named session's dialog is still its pane's bottom-most block. Only
+// that rule is dropped: a composer or output below the dialog still means the
+// dialog is history. Every seat a city runs by name draws this rule, and
+// without this its open dialogs read as idle panes that a nudge then answers.
+func trimSessionNameRule(lines []string) []string {
+	block := trimTrailingBlankRows(lines)
+	if n := len(block); n > 0 && askUserQuestionNameRuleRe.MatchString(strings.TrimSpace(block[n-1])) {
+		return block[:n-1]
+	}
+	return lines
 }
 
 // parseQuestionPage returns the question dialog whose select footer is the
@@ -201,6 +224,8 @@ func parseQuestionPage(lines []string) *parsedQuestion {
 		}
 		if len(q.Choices) == 0 {
 			question = append(question, strings.TrimSpace(strings.TrimPrefix(trimmed, "│")))
+		} else if m := askUserQuestionCursorRe.FindStringSubmatch(trimmed); m != nil {
+			q.Focused = strings.TrimSpace(m[1])
 		}
 	}
 	q.Question = strings.Join(question, " ")
