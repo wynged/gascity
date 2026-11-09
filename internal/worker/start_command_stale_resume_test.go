@@ -1,9 +1,11 @@
 package worker
 
 import (
+	"context"
 	"strings"
 	"testing"
 
+	"github.com/gastownhall/gascity/internal/runtime"
 	sessionpkg "github.com/gastownhall/gascity/internal/session"
 )
 
@@ -69,6 +71,48 @@ func TestStartCommandStaleResumeKeyStartsFreshAndClearsKey(t *testing.T) {
 	}
 	if h := meta("started_config_hash"); h != "" {
 		t.Fatalf("started_config_hash = %q, want cleared so the launch counts as a first start", h)
+	}
+}
+
+// A submit computes the start command before delivering, so a live runtime
+// reaches the stale-key check too. It must keep its key and not be marked for
+// a reset (ch-i0r7).
+func TestStartCommandStaleResumeKeyLeavesLiveRuntimeAlone(t *testing.T) {
+	stubResumeTranscriptProbe(t, false, true)
+	sp := runtime.NewFake()
+	resume := sessionpkg.ProviderResume{ResumeFlag: "--resume", ResumeStyle: "flag", SessionIDFlag: "--session-id"}
+	handle, store, info := newStartCommandHandleWithProvider(t,
+		SessionSpec{Template: "worker", Command: "claude", Provider: "claude", Resume: resume},
+		resume,
+		"claude",
+		sp,
+	)
+	if err := store.SetMetadataBatch(info.ID, map[string]string{
+		"provider":            "claude",
+		"started_config_hash": "hash-abc",
+	}); err != nil {
+		t.Fatalf("SetMetadataBatch: %v", err)
+	}
+	if err := sp.Start(context.Background(), info.SessionName, runtime.Config{}); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	got, err := handle.startCommand(info.ID)
+	if err != nil {
+		t.Fatalf("startCommand: %v", err)
+	}
+	if want := "claude --resume " + info.SessionKey; got != want {
+		t.Fatalf("startCommand() = %q, want %q", got, want)
+	}
+	b, err := store.Get(info.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if k := b.Metadata["session_key"]; k != info.SessionKey {
+		t.Fatalf("session_key = %q, want unchanged %q", k, info.SessionKey)
+	}
+	if v := b.Metadata["continuation_reset_pending"]; v == "true" {
+		t.Fatalf("continuation_reset_pending = %q, a live session must not be marked for reset", v)
 	}
 }
 

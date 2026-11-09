@@ -885,6 +885,13 @@ func (h *SessionHandle) freshCommandForStaleResumeKey(id string, resumeInfo sess
 	if key == "" || (resumeInfo.ResumeFlag == "" && resumeInfo.ResumeCommand == "") {
 		return "", false, nil
 	}
+	// Message and Nudge compute this command before they know whether a start
+	// is needed. A live runtime will not be launched, so it must keep its key:
+	// clearing it here would mark a busy session for a reset (ch-i0r7). When
+	// liveness cannot be read, keep the key too.
+	if obs, err := h.manager.ObserveRuntimeForInfo(resumeInfo, nil); err != nil || obs.Running {
+		return "", false, nil
+	}
 	provider := strings.TrimSpace(resumeInfo.Provider)
 	if kind := strings.TrimSpace(resumeInfo.ProviderKind); kind != "" && !workertranscript.ProviderHasKeyedTranscript(provider) {
 		provider = kind

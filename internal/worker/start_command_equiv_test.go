@@ -18,8 +18,12 @@ import (
 // (Manager.GetWithBead -> session.Store.GetPersistedResponse + EnrichInfo).
 func newStartCommandHandle(t *testing.T, spec SessionSpec, resume sessionpkg.ProviderResume, command string) (*SessionHandle, *beads.MemStore, sessionpkg.Info) {
 	t.Helper()
+	return newStartCommandHandleWithProvider(t, spec, resume, command, runtime.NewFake())
+}
+
+func newStartCommandHandleWithProvider(t *testing.T, spec SessionSpec, resume sessionpkg.ProviderResume, command string, sp *runtime.Fake) (*SessionHandle, *beads.MemStore, sessionpkg.Info) {
+	t.Helper()
 	store := beads.NewMemStore()
-	sp := runtime.NewFake()
 	manager := sessionpkg.NewManagerWithOptions(store, sp, sessionpkg.WithCityPath(t.TempDir()))
 
 	info, err := manager.CreateSession(context.Background(), sessionpkg.CreateOptions{
