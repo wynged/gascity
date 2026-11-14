@@ -124,9 +124,9 @@ func isStage2EligibleSession(rt materializationRuntime, agent *config.Agent) boo
 // compare it against an already-resolved workDir without worrying
 // about trailing slashes, `./` prefixes, or the user-authored rig path
 // being relative to cityPath. This matters because Phase 3B uses
-// `workDir != scopeRoot` to decide whether to inject a per-session
-// PreStart — a spurious mismatch (e.g., "/city/rig" vs "rig/")
-// triggers useless materialization on every spawn.
+// workDirSeesScopeRootSink(workDir, scopeRoot) to decide whether to inject
+// a per-session PreStart — a spurious mismatch (e.g., "/city/rig" vs
+// "rig/") triggers useless materialization on every spawn.
 //
 // When the agent is rig-scoped but no matching rig exists in the
 // config (e.g., an inline [[agent]] with a bespoke dir), the path
@@ -155,6 +155,50 @@ func resolveAgentScopeRoot(agent *config.Agent, cityPath string, rigs []config.R
 		}
 	}
 	return cityPath
+}
+
+// workDirSeesScopeRootSink reports whether a session working in workDir
+// already reads the skill sink stage 1 writes under scopeRoot, so a
+// per-session stage-2 copy in workDir would hand it every skill twice.
+// Both arguments should be canonical (see canonicaliseFilePath); they are
+// cleaned again here, so trailing slashes do not matter.
+//
+// True when workDir is scopeRoot, or lies inside it ("/a/b/c" inside
+// "/a/b", never "/a/bc") with no git repository or worktree root between
+// the two. Provider CLIs discover project skills (.claude/skills and the
+// like) by walking up from the working directory only as far as the
+// enclosing git root: a plain seat directory under the city root (e.g.
+// .gc/agents/deputy-1) sees the city root's sink, but a git worktree
+// nested under it (a city-scoped pool's own checkout) stops at its own
+// root and still needs stage 2.
+func workDirSeesScopeRootSink(workDir, scopeRoot string) bool {
+	if workDir == "" || scopeRoot == "" {
+		return false
+	}
+	workDir = filepath.Clean(workDir)
+	scopeRoot = filepath.Clean(scopeRoot)
+	if workDir == scopeRoot {
+		return true
+	}
+	if !pathStrictlyInside(workDir, scopeRoot) {
+		return false
+	}
+	for dir := workDir; dir != scopeRoot && pathStrictlyInside(dir, scopeRoot); dir = filepath.Dir(dir) {
+		if _, err := os.Lstat(filepath.Join(dir, ".git")); err == nil {
+			return false
+		}
+	}
+	return true
+}
+
+// pathStrictlyInside reports whether cleaned path lies below cleaned root,
+// comparing whole path components.
+func pathStrictlyInside(path, root string) bool {
+	rel, err := filepath.Rel(root, path)
+	if err != nil || rel == "." || filepath.IsAbs(rel) {
+		return false
+	}
+	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
 // canonicaliseFilePath returns filepath.Clean(abs(path)), joining

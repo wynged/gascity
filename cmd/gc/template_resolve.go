@@ -508,8 +508,9 @@ func resolveTemplate(p *agentBuildParams, cfgAgent *config.Agent, qualifiedName 
 	// reality, so we gate on the same availability conditions as
 	// materialization itself:
 	//
-	//   - Stage-1-eligible runtime + workdir == scope root: stage 1
-	//     wrote the sink into the scope root the agent sees.
+	//   - Stage-1-eligible runtime + workdir that sees the scope
+	//     root's sink (workDirSeesScopeRootSink): stage 1 wrote the
+	//     sink into the scope root the agent sees.
 	//   - Stage-2-eligible runtime (regardless of workdir): the
 	//     session PreStart invokes `gc internal materialize-skills`
 	//     into the session workdir before the agent starts.
@@ -527,7 +528,7 @@ func resolveTemplate(p *agentBuildParams, cfgAgent *config.Agent, qualifiedName 
 		if _, ok := materialize.VendorSink(provider); ok {
 			scopeRoot := agentScopeRoot(cfgAgent, p.cityPath, p.rigs)
 			canonWorkDir := canonicaliseFilePath(workDir, p.cityPath)
-			stage1Delivers := canStage1Materialize(materializationRT, cfgAgent) && canonWorkDir == scopeRoot
+			stage1Delivers := canStage1Materialize(materializationRT, cfgAgent) && workDirSeesScopeRootSink(canonWorkDir, scopeRoot)
 			stage2Delivers := isStage2EligibleSession(materializationRT, cfgAgent)
 			if stage1Delivers || stage2Delivers {
 				var agentCat materialize.AgentCatalog
@@ -699,7 +700,10 @@ func resolveTemplate(p *agentBuildParams, cfgAgent *config.Agent, qualifiedName 
 		desired := effectiveSkillsForAgent(sharedCatalog, cfgAgent, wsProvider, p.providers, p.stderr)
 		if len(desired) > 0 {
 			fpExtra = mergeSkillFingerprintEntries(fpExtra, desired)
-			if canonWorkDir != scopeRoot {
+			// A workdir that already sees the scope root's sink (stage 1
+			// wrote there) gets no stage-2 copy: two sinks on one discovery
+			// path list every skill twice (see workDirSeesScopeRootSink).
+			if !workDirSeesScopeRootSink(canonWorkDir, scopeRoot) {
 				// Pool instances inherit their skill catalog from the
 				// template, not the instance — namepool members (e.g.
 				// repo/furiosa from polecat) are not resolvable as
