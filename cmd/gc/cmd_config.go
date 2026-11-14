@@ -199,6 +199,9 @@ func doConfigShow(validate, showProvenance, asJSON bool, stdout, stderr io.Write
 	if annotations := renderProviderChainAnnotations(cfg); annotations != "" {
 		fmt.Fprint(stdout, annotations) //nolint:errcheck // best-effort stdout
 	}
+	if annotations := renderBindingAnnotations(cfg); annotations != "" {
+		fmt.Fprint(stdout, annotations) //nolint:errcheck // best-effort stdout
+	}
 	fmt.Fprint(stdout, string(data)) //nolint:errcheck // best-effort stdout
 	return 0
 }
@@ -207,7 +210,7 @@ func writeConfigShowJSON(stdout io.Writer, cityPath string, cfg *config.City, wa
 	payload := map[string]any{
 		"schema_version": "1",
 		"city_path":      cityPath,
-		"config":         configForDisplay(cfg),
+		"config":         configJSONForDisplay(cfg),
 		"warnings":       nonNilStrings(warnings),
 		"validation": map[string]any{
 			"ok":       len(validationErrors) == 0,
@@ -244,6 +247,95 @@ func configForDisplay(cfg *config.City) *config.City {
 		clone.Workspace.Prefix = strings.TrimSpace(cfg.ResolvedWorkspacePrefix)
 	}
 	return &clone
+}
+
+// cityShowJSON is the config payload of `gc config show --json`: the
+// resolved city with each agent's and named session's import binding
+// added. BindingName is runtime-only on config.Agent and
+// config.NamedSession (toml:"-" json:"-"), so city.toml can never set it;
+// show adds it here rather than loosening those tags, and config load
+// accepts exactly what it did before.
+type cityShowJSON struct {
+	*config.City
+	Agents        []agentShowJSON
+	NamedSessions []namedSessionShowJSON
+}
+
+// agentShowJSON is a config.Agent as `gc config show --json` emits it.
+type agentShowJSON struct {
+	config.Agent
+	BindingName string `json:",omitempty"`
+}
+
+// namedSessionShowJSON is a config.NamedSession as `gc config show --json`
+// emits it.
+type namedSessionShowJSON struct {
+	config.NamedSession
+	BindingName string `json:",omitempty"`
+}
+
+// configJSONForDisplay returns configForDisplay(cfg) with the import
+// bindings attached (see cityShowJSON).
+func configJSONForDisplay(cfg *config.City) any {
+	display := configForDisplay(cfg)
+	if display == nil {
+		return nil
+	}
+	out := cityShowJSON{City: display}
+	if display.Agents != nil {
+		out.Agents = make([]agentShowJSON, len(display.Agents))
+		for i, a := range display.Agents {
+			out.Agents[i] = agentShowJSON{Agent: a, BindingName: a.BindingName}
+		}
+	}
+	if display.NamedSessions != nil {
+		out.NamedSessions = make([]namedSessionShowJSON, len(display.NamedSessions))
+		for i, s := range display.NamedSessions {
+			out.NamedSessions[i] = namedSessionShowJSON{NamedSession: s, BindingName: s.BindingName}
+		}
+	}
+	return out
+}
+
+// renderBindingAnnotations produces a commented block naming the import
+// binding of every agent and named session that came in through one, for
+// the TOML form of `gc config show`. BindingName is runtime-only (it never
+// marshals), so a comment is the only place the TOML can carry it without
+// emitting a key config load would refuse. Returns "" when nothing was
+// imported through a binding.
+//
+//	# Import bindings (runtime-only; set by [imports.*], not by city.toml):
+//	#   agent         gastown.mayor        binding gastown
+//	#   named_session gastown.mayor        binding gastown
+func renderBindingAnnotations(cfg *config.City) string {
+	if cfg == nil {
+		return ""
+	}
+	var rows []string
+	for i := range cfg.Agents {
+		a := &cfg.Agents[i]
+		if a.BindingName == "" {
+			continue
+		}
+		rows = append(rows, "#   agent         "+padRight(a.QualifiedName(), 20)+" binding "+a.BindingName+"\n")
+	}
+	for i := range cfg.NamedSessions {
+		s := &cfg.NamedSessions[i]
+		if s.BindingName == "" {
+			continue
+		}
+		rows = append(rows, "#   named_session "+padRight(s.QualifiedName(), 20)+" binding "+s.BindingName+"\n")
+	}
+	if len(rows) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("# Import bindings (runtime-only; set by [imports.*], not by city.toml):\n")
+	for _, r := range rows {
+		b.WriteString(r)
+	}
+	b.WriteString("#\n")
+	return b.String()
 }
 
 // renderProviderChainAnnotations produces a commented block summarizing
