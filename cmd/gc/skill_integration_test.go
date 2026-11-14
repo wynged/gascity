@@ -582,3 +582,61 @@ func namesOf(entries []materialize.SkillEntry) []string {
 	}
 	return out
 }
+
+// TestWorkDirSeesScopeRootSink pins ch-ez4xq: a workdir inside the scope
+// root reads stage 1's sink there by walking up, unless a git root sits
+// between them; prefix matching is by whole path component.
+func TestWorkDirSeesScopeRootSink(t *testing.T) {
+	root := t.TempDir()
+	mk := func(rel string) string {
+		dir := filepath.Join(root, rel)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		return dir
+	}
+	city := mk("city")
+	seat := mk("city/.gc/agents/deputy-1")
+	worktree := mk("city/.gc/masons/mason-1")
+	if err := os.WriteFile(filepath.Join(worktree, ".git"), []byte("gitdir: /x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	insideWorktree := mk("city/.gc/masons/mason-1/sub")
+	repoDir := mk("city/.gc/clones/repo")
+	if err := os.MkdirAll(filepath.Join(repoDir, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	sibling := mk("citybc")
+	// A .git at the scope root itself is not a boundary: the city is
+	// usually a repo, and its seats sit inside it.
+	if err := os.MkdirAll(filepath.Join(city, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	cases := []struct {
+		name      string
+		workDir   string
+		scopeRoot string
+		want      bool
+	}{
+		{"same dir", city, city, true},
+		{"same dir, trailing slashes", city + "/", city + "//", true},
+		{"plain seat dir inside", seat, city, true},
+		{"plain seat dir inside, root with trailing slash", seat, city + "/", true},
+		{"nested git worktree (.git file)", worktree, city, false},
+		{"below a nested git worktree", insideWorktree, city, false},
+		{"nested git repo (.git dir)", repoDir, city, false},
+		{"sibling sharing a name prefix", sibling, city, false},
+		{"parent of scope root", root, city, false},
+		{"unrelated", "/", city, false},
+		{"empty workdir", "", city, false},
+		{"empty scope root", seat, "", false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := workDirSeesScopeRootSink(c.workDir, c.scopeRoot); got != c.want {
+				t.Fatalf("workDirSeesScopeRootSink(%q, %q) = %v, want %v", c.workDir, c.scopeRoot, got, c.want)
+			}
+		})
+	}
+}
