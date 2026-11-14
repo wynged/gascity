@@ -422,6 +422,7 @@ func TestRelayWrapInsideEnvUnsetInsideSlice(t *testing.T) {
 	t.Setenv(AgentSliceEnv, "gascity-agents.slice")
 	tm, rec, _, _ := captureTestTmux(t)
 	tm.agentSlice.probe = func(string) error { return nil }
+	tm.agentSlice.suffix = func() string { return "s1" }
 	rec.outs = []string{"%2"}
 	arm := runtime.ProgramStatusArm{Capture: true, Relay: true}
 	if err := tm.newSessionWithCommandAndEnv("gc-order", "", "claude", map[string]string{"LC_ALL": ""}, arm); err != nil {
@@ -429,7 +430,7 @@ func TestRelayWrapInsideEnvUnsetInsideSlice(t *testing.T) {
 	}
 	relayed := shellquote.Join([]string{testCompanion, "relay", "--", "/bin/sh", "-c", "claude"})
 	want := shellquote.Join([]string{
-		"systemd-run", "--user", "--scope", "--slice=gascity-agents.slice", "--collect", "--quiet", "--expand-environment=no", "--",
+		"systemd-run", "--user", "--scope", "--slice=gascity-agents.slice", "--collect", "--quiet", "--expand-environment=no", "--unit=gc-gc-order-s1.scope", "--",
 		"sh", "-c", "exec env -u LC_ALL " + relayed,
 	})
 	create := rec.calls[0]

@@ -23,6 +23,7 @@ func newSliceTestTmux(t *testing.T) (*Tmux, *fakeExecutor) {
 	tm.exec = exec
 	tm.agentSlice.probe = func(string) error { return nil }
 	tm.agentSlice.warn = &strings.Builder{}
+	tm.agentSlice.suffix = func() string { return "s1" }
 	return tm, exec
 }
 
@@ -38,7 +39,7 @@ func TestAgentSliceWrapsNewSessionWithCommand(t *testing.T) {
 	}
 	args := exec.calls[0]
 	got := args[len(args)-1]
-	want := "systemd-run --user --scope --slice=gascity-agents.slice --collect --quiet --expand-environment=no -- sh -c 'exec env GT_ROLE=crew claude'"
+	want := "systemd-run --user --scope --slice=gascity-agents.slice --collect --quiet --expand-environment=no --unit=gc-gc-test-slice-s1.scope -- sh -c 'exec env GT_ROLE=crew claude'"
 	if got != want {
 		t.Fatalf("pane command = %q, want %q", got, want)
 	}
@@ -59,7 +60,7 @@ func TestAgentSliceWrapsNewSessionWithCommandAndEnv(t *testing.T) {
 	got := args[len(args)-1]
 	// The env -u prefix must end up INSIDE the scope wrapper so the unset
 	// still applies to the agent process.
-	want := "systemd-run --user --scope --slice=gascity-agents.slice --collect --quiet --expand-environment=no -- sh -c 'env -u LC_ALL claude'"
+	want := "systemd-run --user --scope --slice=gascity-agents.slice --collect --quiet --expand-environment=no --unit=gc-gc-test-slice-env-s1.scope -- sh -c 'env -u LC_ALL claude'"
 	if got != want {
 		t.Fatalf("pane command = %q, want %q", got, want)
 	}
@@ -74,7 +75,7 @@ func TestAgentSliceWrapsRespawnPane(t *testing.T) {
 	t.Setenv(AgentSliceEnv, "gascity-agents.slice")
 	tm, exec := newSliceTestTmux(t)
 
-	want := "systemd-run --user --scope --slice=gascity-agents.slice --collect --quiet --expand-environment=no -- sh -c 'claude --resume'"
+	want := "systemd-run --user --scope --slice=gascity-agents.slice --collect --quiet --expand-environment=no --unit=gc-pane-s1.scope -- sh -c 'claude --resume'"
 	if err := tm.RespawnPaneWithWorkDir("%0", "/work", "claude --resume"); err != nil {
 		t.Fatalf("RespawnPaneWithWorkDir: %v", err)
 	}
@@ -169,7 +170,7 @@ func TestAgentSliceQuotesEmbeddedSingleQuotes(t *testing.T) {
 	}
 	args := exec.calls[0]
 	got := args[len(args)-1]
-	want := `systemd-run --user --scope --slice=gascity-agents.slice --collect --quiet --expand-environment=no -- sh -c 'claude --msg '\''hi there'\'''`
+	want := `systemd-run --user --scope --slice=gascity-agents.slice --collect --quiet --expand-environment=no --unit=gc-gc-test-quote-s1.scope -- sh -c 'claude --msg '\''hi there'\'''`
 	if got != want {
 		t.Fatalf("pane command = %q, want %q", got, want)
 	}
@@ -330,4 +331,98 @@ func snapshotHasDescendant(pid string, names ...string) bool {
 		return false
 	}
 	return processes.hasDescendantWithNames(pid, proctable.ProcessNameSet(names), 0)
+}
+
+func TestAgentScopeUnitName(t *testing.T) {
+	cases := []struct {
+		name, city, session, suffix, want string
+	}{
+		{"plain", "city_hy", "mayor", "ab12cd34", "gc-city_hy-mayor-ab12cd34.scope"},
+		{"slash in qualified name", "city_hy", "pringle/frito", "x", "gc-city_hy-pringle_frito-x.scope"},
+		{"disallowed bytes", "my city", "a@b$c\\d é", "x", "gc-my_city-a_b_c_d___-x.scope"},
+		{"allowed punctuation kept", "c", "a:b_c.d-e", "x", "gc-c-a:b_c.d-e-x.scope"},
+		{"no city", "", "mayor", "x", "gc-mayor-x.scope"},
+		{"no session", "c", "", "x", "gc-c-pane-x.scope"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := agentScopeUnitName(tc.city, tc.session, tc.suffix); got != tc.want {
+				t.Fatalf("agentScopeUnitName(%q, %q, %q) = %q, want %q", tc.city, tc.session, tc.suffix, got, tc.want)
+			}
+		})
+	}
+}
+
+// A unit name must stay under systemd's 255-byte cap and inside its
+// alphabet however long or odd the city and session names are.
+func TestAgentScopeUnitNameBounded(t *testing.T) {
+	long := strings.Repeat("ç/", 400)
+	got := agentScopeUnitName(long, long, randomScopeSuffix())
+	if len(got) >= 255 {
+		t.Fatalf("unit name is %d bytes, want < 255: %q", len(got), got)
+	}
+	if !strings.HasSuffix(got, ".scope") {
+		t.Fatalf("unit name %q lacks .scope suffix", got)
+	}
+	for i := 0; i < len(got); i++ {
+		c := got[i]
+		ok := c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || strings.IndexByte(":_.-", c) >= 0
+		if !ok {
+			t.Fatalf("unit name %q has disallowed byte %q at %d", got, c, i)
+		}
+	}
+}
+
+// Two spawns of the same session get distinct scope names, so a respawn
+// never collides with a scope systemd is still collecting.
+func TestAgentScopeUnitNameUniquePerSpawn(t *testing.T) {
+	t.Setenv(AgentSliceEnv, "gascity-agents.slice")
+	tm, exec := newSliceTestTmux(t)
+	tm.agentSlice.suffix = nil // the real random suffix
+	seen := map[string]bool{}
+	for i := 0; i < 50; i++ {
+		if err := tm.NewSessionWithCommand("gc-test-unique", "/work", "claude"); err != nil {
+			t.Fatalf("NewSessionWithCommand: %v", err)
+		}
+	}
+	for _, args := range exec.calls {
+		if !slices.Contains(args, "new-session") {
+			continue
+		}
+		cmd := args[len(args)-1]
+		_, rest, ok := strings.Cut(cmd, "--unit=")
+		if !ok {
+			t.Fatalf("pane command lacks --unit: %q", cmd)
+		}
+		unit, _, _ := strings.Cut(rest, " ")
+		if !strings.HasPrefix(unit, "gc-gc-test-unique-") {
+			t.Fatalf("unit %q does not name the session", unit)
+		}
+		if seen[unit] {
+			t.Fatalf("unit %q repeated across spawns", unit)
+		}
+		seen[unit] = true
+	}
+	if len(seen) != 50 {
+		t.Fatalf("saw %d distinct units, want 50", len(seen))
+	}
+}
+
+// The tmux socket names the city in the unit.
+func TestAgentScopeUnitUsesSocketAsCity(t *testing.T) {
+	t.Setenv(AgentSliceEnv, "gascity-agents.slice")
+	tm, exec := newSliceTestTmux(t)
+	tm.cfg.SocketName = "city_hy"
+	if err := tm.NewSessionWithCommand("mayor", "/work", "claude"); err != nil {
+		t.Fatalf("NewSessionWithCommand: %v", err)
+	}
+	var got string
+	for _, args := range exec.calls {
+		if slices.Contains(args, "new-session") {
+			got = args[len(args)-1]
+		}
+	}
+	if !strings.Contains(got, " --unit=gc-city_hy-mayor-s1.scope ") {
+		t.Fatalf("pane command = %q, want unit gc-city_hy-mayor-s1.scope", got)
+	}
 }

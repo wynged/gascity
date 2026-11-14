@@ -832,7 +832,7 @@ func (t *Tmux) NewSessionWithCommand(name, workDir, command string) error {
 		args = append(args, "-c", workDir)
 	}
 	// Add the command as the last argument - tmux runs it as the pane's initial process
-	args = append(args, t.wrapPaneCommand(command))
+	args = append(args, t.wrapPaneCommand(name, command))
 	pane, err := t.run(args...)
 	if err != nil {
 		return err
@@ -1032,7 +1032,7 @@ func (t *Tmux) newSessionWithCommandAndEnv(name, workDir, command string, env ma
 	}
 	command = plan.execPaneRoot(command)
 	// Add the command as the last argument
-	args = append(args, t.wrapPaneCommand(command))
+	args = append(args, t.wrapPaneCommand(name, command))
 	cmds := [][]string{args}
 	if plan != nil {
 		cmds = append(cmds, plan.armCommands(paneTarget(name), false)...)
@@ -6544,7 +6544,7 @@ func (t *Tmux) respawnPaneWithWorkDir(pane, workDir, command string, arm runtime
 		return err
 	}
 	if plan := t.planCapture(arm); plan != nil {
-		followErr, err := t.runRespawnList(target, workDir, t.wrapPaneCommand(plan.execPaneRoot(plan.wrapRelay(command))), plan.armCommands(target, true))
+		followErr, err := t.runRespawnList(target, workDir, t.wrapPaneCommand(scopeSessionName(pane), plan.execPaneRoot(plan.wrapRelay(command))), plan.armCommands(target, true))
 		t.programArms.noteArmed(plan)
 		if err != nil {
 			return err
@@ -6558,7 +6558,7 @@ func (t *Tmux) respawnPaneWithWorkDir(pane, workDir, command string, arm runtime
 	if t.programStatusMode() != runtime.ProgramStatusOff {
 		disarm = disarmCommands(target)
 	}
-	followErr, err := t.runRespawnList(target, workDir, t.wrapPaneCommand(command), disarm)
+	followErr, err := t.runRespawnList(target, workDir, t.wrapPaneCommand(scopeSessionName(pane), command), disarm)
 	if err != nil {
 		return err
 	}
