@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"path/filepath"
 	"strings"
 
 	"github.com/gastownhall/gascity/internal/runtime"
@@ -170,7 +171,13 @@ func (h *SessionHandle) Stop(ctx context.Context, by sessionpkg.Actor) (err erro
 // across every session bead with no state pre-filter. Only that sweep may use
 // it: it additionally tears down a DRAINING seat instead of rejecting it with an
 // illegal transition, because rejecting those made every restart skip them and
-// leave them alive holding their pool slot names (ga-rxhu2).
+// leave them alive holding their pool slot names (ga-rxhu2), and a CREATING
+// seat whose start brought the runtime up but has not committed it active,
+// because rejecting that made the stop error out and leave the live runtime
+// running past the shutdown (ga-fqdzdy). Neither writes the row: a creating
+// row keeps its in-flight marker for the next start to read. `gc rig restart`
+// sweeps a rig through this stop while the controller runs, so there the
+// teardown can land under a start still in flight (SESSION-START-026).
 //
 // Kept as a separate method rather than a flag on Stop so the latitude cannot
 // reach a targeted operator path by accident — that is exactly how it leaked
@@ -322,13 +329,22 @@ func (h *SessionHandle) State(ctx context.Context) (State, error) {
 		state.Pending = pending
 		return state, nil
 	case sessionpkg.StateActive, sessionpkg.StateAwake:
+		state.Program = h.programStatus(info.SessionName)
 		pending, err := h.Pending(ctx)
 		if err != nil {
 			return State{}, err
 		}
+		// Under the program-status shadow switch, the phase this view
+		// settles on is recorded beside the record (observation); the
+		// phase returned is this view's alone.
+		defer func() { h.manager.RecordObservationShadow(info, observationVerdict(state.Phase)) }()
 		if pending != nil {
 			state.Phase = PhaseBlocked
 			state.Pending = pending
+			return state, nil
+		}
+		if phase, decided := ProgramPhase(state.Program); decided {
+			state.Phase = phase
 			return state, nil
 		}
 		state.Phase = PhaseReady
@@ -375,6 +391,17 @@ func (h *SessionHandle) State(ctx context.Context) (State, error) {
 	return state, nil
 }
 
+// programStatus reads runtime session sessionName's judged program status
+// through the session manager; a reading the runtime cannot take is Unread
+// (ProgramStatusOf).
+func (h *SessionHandle) programStatus(sessionName string) runtime.ProgramStatus {
+	ps, err := h.manager.ProgramStatusByName(sessionName)
+	if err != nil {
+		return runtime.ProgramStatus{}
+	}
+	return ps
+}
+
 // Message sends a user turn to the worker.
 func (h *SessionHandle) Message(ctx context.Context, by sessionpkg.Actor, req MessageRequest) (result MessageResult, err error) {
 	event := h.beginOperationEvent(ctx, workerOperationMessage)
@@ -407,6 +434,14 @@ func (h *SessionHandle) Message(ctx context.Context, by sessionpkg.Actor, req Me
 		ctx = runtime.WithNudgeDeliveryKey(ctx, req.DeliveryKey)
 	}
 	outcome, err := h.manager.Submit(ctx, by, id, req.Text, resumeCommand, h.runtimeHints(), submitIntent(req.Delivery))
+	if err != nil && req.QueueBehindPending && errors.Is(err, sessionpkg.ErrPendingInteraction) &&
+		!errors.Is(err, sessionpkg.ErrReplacementNotPrepared) {
+		if err = h.manager.QueueSubmit(id, req.Text); err != nil {
+			return MessageResult{}, err
+		}
+		result = MessageResult{Queued: true}
+		return result, nil
+	}
 	if err != nil {
 		return MessageResult{}, err
 	}
@@ -774,20 +809,7 @@ func (h *SessionHandle) startCommand(id string) (string, error) {
 	if firstProviderSessionStart(info.State, pr.Metadata) &&
 		h.session.Resume.SessionIDFlag != "" &&
 		strings.TrimSpace(info.SessionKey) != "" {
-		command := strings.TrimSpace(info.Command)
-		if command == "" {
-			command = strings.TrimSpace(h.session.Command)
-		}
-		if command == "" {
-			command = strings.TrimSpace(info.Provider)
-		}
-		if command == "" {
-			command = strings.TrimSpace(h.session.Provider)
-		}
-		if command == "" {
-			return "", fmt.Errorf("%w: command is required for first start", ErrHandleConfig)
-		}
-		return command + " " + h.session.Resume.SessionIDFlag + " " + info.SessionKey, nil
+		return startCommandWithSessionID(info, h.session)
 	}
 	resumeInfo := info
 	if command := strings.TrimSpace(h.session.Command); command != "" {
@@ -813,12 +835,29 @@ func (h *SessionHandle) startCommand(id string) (string, error) {
 	return sessionpkg.BuildResumeCommand(resumeInfo), nil
 }
 
+func startCommandWithSessionID(info sessionpkg.Info, spec SessionSpec) (string, error) {
+	command := strings.TrimSpace(info.Command)
+	if command == "" {
+		command = strings.TrimSpace(spec.Command)
+	}
+	if command == "" {
+		command = strings.TrimSpace(info.Provider)
+	}
+	if command == "" {
+		command = strings.TrimSpace(spec.Provider)
+	}
+	if command == "" {
+		return "", fmt.Errorf("%w: command is required to start session", ErrHandleConfig)
+	}
+	return command + " " + spec.Resume.SessionIDFlag + " " + info.SessionKey, nil
+}
+
 // resumeTranscriptProbe reports whether the keyed transcript a resume would
 // reattach to is on disk (present) and whether the provider's keyed transcript
 // can be probed at all (probeable). A package var so tests can model a missing
 // transcript without building provider-specific trees.
-var resumeTranscriptProbe = func(provider, workDir, sessionKey string) (present, probeable bool) {
-	return workertranscript.HasKeyedTranscript(DefaultSearchPaths(), provider, workDir, sessionKey)
+var resumeTranscriptProbe = func(searchPaths []string, provider, workDir, sessionKey string) (present, probeable bool) {
+	return workertranscript.HasKeyedTranscript(searchPaths, provider, workDir, sessionKey)
 }
 
 // freshCommandForStaleResumeKey is the worker-handle twin of the reconciler's
@@ -832,19 +871,40 @@ var resumeTranscriptProbe = func(provider, workDir, sessionKey string) (present,
 //
 // Instead: clear the key on the bead (StaleResumeKeyResetPatch, the same reset
 // the reconciler applies) so the bead stops naming a conversation that no
-// longer exists, and launch fresh — with a newly minted key when the provider
-// takes a session-id flag, else with the bare command. Providers whose keyed
-// transcript cannot be probed are left alone.
+// longer exists and the launch counts as a first start, and launch fresh --
+// with a newly minted key when the provider takes a session-id flag, else with
+// the bare command. Providers whose keyed transcript cannot be probed are left
+// alone.
+//
+// The probe roots follow upstream #8514 and the reconciler: claude-family
+// providers search the handle's search paths, other providers the defaults,
+// and an absolute CLAUDE_CONFIG_DIR adds <dir>/projects, without which a real
+// transcript under a custom config dir would read as missing.
 func (h *SessionHandle) freshCommandForStaleResumeKey(id string, resumeInfo sessionpkg.Info) (string, bool, error) {
 	key := strings.TrimSpace(resumeInfo.SessionKey)
 	if key == "" || (resumeInfo.ResumeFlag == "" && resumeInfo.ResumeCommand == "") {
 		return "", false, nil
 	}
-	provider := strings.TrimSpace(resumeInfo.ProviderKind)
-	if provider == "" {
-		provider = strings.TrimSpace(resumeInfo.Provider)
+	// Message and Nudge compute this command before they know whether a start
+	// is needed. A live runtime will not be launched, so it must keep its key:
+	// clearing it here would mark a busy session for a reset (ch-i0r7). When
+	// liveness cannot be read, keep the key too.
+	if obs, err := h.manager.ObserveRuntimeForInfo(resumeInfo, nil); err != nil || obs.Running {
+		return "", false, nil
 	}
-	present, probeable := resumeTranscriptProbe(provider, resumeInfo.WorkDir, key)
+	provider := strings.TrimSpace(resumeInfo.Provider)
+	if kind := strings.TrimSpace(resumeInfo.ProviderKind); kind != "" && !workertranscript.ProviderHasKeyedTranscript(provider) {
+		provider = kind
+	}
+	isClaude := strings.Contains(strings.ToLower(provider), "claude")
+	probePaths := h.searchPaths
+	if len(probePaths) == 0 || !isClaude {
+		probePaths = DefaultSearchPaths()
+	}
+	if dir := strings.TrimSpace(h.session.Env["CLAUDE_CONFIG_DIR"]); isClaude && filepath.IsAbs(dir) {
+		probePaths = MergeSearchPaths(append(append([]string(nil), probePaths...), filepath.Join(dir, "projects")))
+	}
+	present, probeable := resumeTranscriptProbe(probePaths, provider, resumeInfo.WorkDir, key)
 	if !probeable || present {
 		return "", false, nil
 	}
@@ -926,5 +986,21 @@ func submitIntent(intent DeliveryIntent) sessionpkg.SubmitIntent {
 		return sessionpkg.SubmitIntentInterruptNow
 	default:
 		return sessionpkg.SubmitIntentDefault
+	}
+}
+
+// observationVerdict is the shadow observation token for a phase this view
+// settled on for a live session: Busy is busy, Blocked pending, and Ready
+// idle; any other phase reads indeterminate.
+func observationVerdict(phase Phase) runtime.ProgramVerdict {
+	switch phase {
+	case PhaseBusy:
+		return runtime.ProgramVerdictBusy
+	case PhaseBlocked:
+		return runtime.ProgramVerdictPending
+	case PhaseReady:
+		return runtime.ProgramVerdictIdle
+	default:
+		return runtime.ProgramVerdictIndeterminate
 	}
 }

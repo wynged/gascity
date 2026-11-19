@@ -52,15 +52,50 @@ func TestParseAskUserQuestionLayouts(t *testing.T) {
 	for _, tc := range questionMenuLayouts {
 		t.Run(tc.fixture, func(t *testing.T) {
 			lines := strings.Split(readQuestionMenuPane(t, tc.fixture), "\n")
-			q := parseAskUserQuestion(lines)
+			q := parseQuestionDialog(lines)
 			if (q != nil) != tc.open {
-				t.Fatalf("parseAskUserQuestion = %+v, want open=%v", q, tc.open)
+				t.Fatalf("parseQuestionDialog = %+v, want open=%v", q, tc.open)
 			}
 			if q != nil && q.Focused != tc.focused {
 				t.Errorf("Focused = %q, want %q", q.Focused, tc.focused)
 			}
 			if got := PaneShowsIdlePrompt(lines, DefaultReadyPromptPrefix); got == tc.open {
 				t.Errorf("PaneShowsIdlePrompt = %v with open=%v", got, tc.open)
+			}
+		})
+	}
+}
+
+// A named session's rule under an idle composer does not make the answered
+// dialog above it look live.
+func TestParseQuestionDialogNamedRuleUnderComposerIsNotAQuestion(t *testing.T) {
+	rule := "──────────────────────────────────── project ─"
+	for _, tc := range []struct {
+		name string
+		rows []string
+	}{
+		{"answered question page", []string{
+			"❯ 1. Red",
+			"  2. Blue",
+			"Enter to select · Tab/Arrow keys to navigate · Esc to cancel",
+			"● Done.",
+			"────────────────",
+			"❯ ",
+			rule,
+		}},
+		{"answered review page", []string{
+			"Review your answers",
+			"Ready to submit your answers?",
+			"❯ 1. Submit answers",
+			"  2. Cancel",
+			"● Done.",
+			"❯ ",
+			rule,
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if q := parseQuestionDialog(tc.rows); q != nil {
+				t.Fatalf("parseQuestionDialog = %+v, want nil", q)
 			}
 		})
 	}

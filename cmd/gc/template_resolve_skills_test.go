@@ -78,6 +78,10 @@ func TestResolveTemplateSkillsIntegration(t *testing.T) {
 		}
 	}
 
+	// polecat-1 is a git worktree of its own, so provider skill discovery
+	// stops there and never sees the city root's sink.
+	markNestedGitRoot(t, cityPath, ".gc/worktrees/polecat-1")
+
 	cases := []struct {
 		name               string
 		sessionProvider    string
@@ -103,6 +107,21 @@ func TestResolveTemplateSkillsIntegration(t *testing.T) {
 			},
 			wantSkillsKey:      true,
 			wantMaterializeCmd: true,
+		},
+		{
+			// ch-ez4xq: a plain seat directory under the city root reads
+			// the city root's sink (stage 1) by walking up; a stage-2
+			// copy in the seat would list every skill twice.
+			name:            "tmux + plain workdir inside scope root",
+			sessionProvider: "tmux",
+			agent: &config.Agent{
+				Name:     "deputy",
+				Scope:    "city",
+				Provider: "claude",
+				WorkDir:  ".gc/agents/deputy-1",
+			},
+			wantSkillsKey:      true,
+			wantMaterializeCmd: false,
 		},
 		{
 			name:            "acp session ineligible",
@@ -213,6 +232,8 @@ func TestResolveTemplateSkillChangesDrainOnlyAtTheStage2Boundary(t *testing.T) {
 		return false
 	}
 
+	markNestedGitRoot(t, cityPath, ".gc/worktrees/polecat-1")
+
 	for _, c := range []struct {
 		name     string
 		agent    *config.Agent
@@ -226,6 +247,11 @@ func TestResolveTemplateSkillChangesDrainOnlyAtTheStage2Boundary(t *testing.T) {
 		{
 			name:     "tmux + workdir == scope root",
 			agent:    &config.Agent{Name: "mayor", Scope: "city", Provider: "claude"},
+			boundary: false,
+		},
+		{
+			name:     "tmux + plain workdir inside scope root",
+			agent:    &config.Agent{Name: "deputy", Scope: "city", Provider: "claude", WorkDir: ".gc/agents/deputy-1"},
 			boundary: false,
 		},
 	} {
@@ -286,6 +312,7 @@ func TestResolveTemplateSkillChangesDrainOnlyAtTheStage2Boundary(t *testing.T) {
 // sessions during upgrade.
 func TestResolveTemplateSharedCatalogSnapshotFlowsThroughFile(t *testing.T) {
 	cityPath := t.TempDir()
+	markNestedGitRoot(t, cityPath, ".gc/worktrees/polecat-1")
 	writeTemplateResolveCityConfig(t, cityPath, "file")
 	sharedCat := materialize.CityCatalog{
 		Entries: []materialize.SkillEntry{{
@@ -361,6 +388,7 @@ func TestResolveTemplateSharedCatalogSnapshotFlowsThroughFile(t *testing.T) {
 
 func TestResolveTemplateSharedCatalogSnapshotKeepsConfigHashStableAcrossCacheTransitions(t *testing.T) {
 	cityPath := t.TempDir()
+	markNestedGitRoot(t, cityPath, ".gc/worktrees/polecat-1")
 	writeTemplateResolveCityConfig(t, cityPath, "file")
 	sharedCat := materialize.CityCatalog{
 		Entries: []materialize.SkillEntry{{
@@ -415,6 +443,7 @@ func TestResolveTemplateSharedCatalogSnapshotKeepsConfigHashStableAcrossCacheTra
 // PreStart command unchanged.
 func TestResolveTemplateSharedCatalogSnapshotEnvIsAbsent(t *testing.T) {
 	cityPath := t.TempDir()
+	markNestedGitRoot(t, cityPath, ".gc/worktrees/polecat-1")
 	writeTemplateResolveCityConfig(t, cityPath, "file")
 	sharedCat := materialize.CityCatalog{
 		Entries: []materialize.SkillEntry{{
@@ -469,6 +498,7 @@ func TestResolveTemplateSharedCatalogSnapshotEnvIsAbsent(t *testing.T) {
 
 func TestResolveTemplateRemovesStaleSharedCatalogSnapshotFileWhenCatalogUnavailable(t *testing.T) {
 	cityPath := t.TempDir()
+	markNestedGitRoot(t, cityPath, ".gc/worktrees/polecat-1")
 	writeTemplateResolveCityConfig(t, cityPath, "file")
 	agentSkillsDir := filepath.Join(cityPath, "agent-skills")
 	writeSkillSource(t, filepath.Join(agentSkillsDir, "private"))
@@ -659,6 +689,7 @@ func TestResolveTemplateAppendsAssignedSkillsPrompt(t *testing.T) {
 		// agent's workdir sink stays empty. No appendix.
 		params := buildParams()
 		params.sessionProvider = "subprocess"
+		markNestedGitRoot(t, params.cityPath, ".gc/worktrees/sub-1")
 		a := &config.Agent{
 			Name:     "sub",
 			Scope:    "city",
@@ -781,6 +812,9 @@ func TestResolveTemplatePoolInstanceMaterializeUsesTemplateName(t *testing.T) {
 	// Non-pool singleton: cfgAgent.PoolName is empty, so the cmd carries
 	// the agent's own qualified name. Guards against over-correction
 	// where templateNameFor's fallback breaks non-pool cases.
+	// A worktree of its own, so the singleton still gets a stage-2 entry
+	// to check.
+	markNestedGitRoot(t, cityPath, ".gc/agents/mayor")
 	singleton := &config.Agent{
 		Name:     "mayor",
 		Scope:    "city",
@@ -880,5 +914,19 @@ func TestResolveTemplateNamedSessionMaterializeUsesTemplateName(t *testing.T) {
 	}
 	if strings.Contains(materializeCmd, "--agent rig/utz") {
 		t.Errorf("materialize-skills --agent flag must NOT carry named_session identity rig/utz; got: %q", materializeCmd)
+	}
+}
+
+// markNestedGitRoot makes rel (under cityPath) a git root of its own, as a
+// city pool's worktree under the city root is: provider skill discovery
+// stops there, so the session needs its own stage-2 sink.
+func markNestedGitRoot(t *testing.T, cityPath, rel string) {
+	t.Helper()
+	dir := filepath.Join(cityPath, rel)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".git"), []byte("gitdir: /nonexistent\n"), 0o644); err != nil {
+		t.Fatal(err)
 	}
 }

@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/gastownhall/gascity/internal/runtime/proctable"
 )
 
 // newSliceTestTmux returns a Tmux backed by a fakeExecutor with the agent
@@ -21,6 +23,7 @@ func newSliceTestTmux(t *testing.T) (*Tmux, *fakeExecutor) {
 	tm.exec = exec
 	tm.agentSlice.probe = func(string) error { return nil }
 	tm.agentSlice.warn = &strings.Builder{}
+	tm.agentSlice.suffix = func() string { return "s1" }
 	return tm, exec
 }
 
@@ -36,7 +39,7 @@ func TestAgentSliceWrapsNewSessionWithCommand(t *testing.T) {
 	}
 	args := exec.calls[0]
 	got := args[len(args)-1]
-	want := "systemd-run --user --scope --slice=gascity-agents.slice --collect --quiet --expand-environment=no -- sh -c 'exec env GT_ROLE=crew claude'"
+	want := "systemd-run --user --scope --slice=gascity-agents.slice --unit=gc-gc-test-slice-s1.scope --collect --quiet --expand-environment=no -- sh -c 'exec env GT_ROLE=crew claude'"
 	if got != want {
 		t.Fatalf("pane command = %q, want %q", got, want)
 	}
@@ -57,7 +60,7 @@ func TestAgentSliceWrapsNewSessionWithCommandAndEnv(t *testing.T) {
 	got := args[len(args)-1]
 	// The env -u prefix must end up INSIDE the scope wrapper so the unset
 	// still applies to the agent process.
-	want := "systemd-run --user --scope --slice=gascity-agents.slice --collect --quiet --expand-environment=no -- sh -c 'env -u LC_ALL claude'"
+	want := "systemd-run --user --scope --slice=gascity-agents.slice --unit=gc-gc-test-slice-env-s1.scope --collect --quiet --expand-environment=no -- sh -c 'env -u LC_ALL claude'"
 	if got != want {
 		t.Fatalf("pane command = %q, want %q", got, want)
 	}
@@ -72,13 +75,15 @@ func TestAgentSliceWrapsRespawnPane(t *testing.T) {
 	t.Setenv(AgentSliceEnv, "gascity-agents.slice")
 	tm, exec := newSliceTestTmux(t)
 
-	want := "systemd-run --user --scope --slice=gascity-agents.slice --collect --quiet --expand-environment=no -- sh -c 'claude --resume'"
+	want := "systemd-run --user --scope --slice=gascity-agents.slice --unit=gc-pane-s1.scope --collect --quiet --expand-environment=no -- sh -c 'claude --resume'"
 	if err := tm.RespawnPaneWithWorkDir("%0", "/work", "claude --resume"); err != nil {
 		t.Fatalf("RespawnPaneWithWorkDir: %v", err)
 	}
+	// The pane command ends respawn-pane, the list's first command.
 	args := exec.calls[0]
-	if got := args[len(args)-1]; got != want {
-		t.Fatalf("respawn-with-workdir command = %q, want %q", got, want)
+	sep := slices.Index(args, ";")
+	if sep < 1 || args[sep-1] != want {
+		t.Fatalf("respawn-with-workdir command in %q, want %q", args, want)
 	}
 }
 
@@ -165,7 +170,7 @@ func TestAgentSliceQuotesEmbeddedSingleQuotes(t *testing.T) {
 	}
 	args := exec.calls[0]
 	got := args[len(args)-1]
-	want := `systemd-run --user --scope --slice=gascity-agents.slice --collect --quiet --expand-environment=no -- sh -c 'claude --msg '\''hi there'\'''`
+	want := `systemd-run --user --scope --slice=gascity-agents.slice --unit=gc-gc-test-quote-s1.scope --collect --quiet --expand-environment=no -- sh -c 'claude --msg '\''hi there'\'''`
 	if got != want {
 		t.Fatalf("pane command = %q, want %q", got, want)
 	}
@@ -193,7 +198,7 @@ func TestAgentInputTarget_WrappedPane(t *testing.T) {
 
 	panePID := strconv.Itoa(os.Getpid())
 	deadline := time.Now().Add(5 * time.Second)
-	for !hasDescendantWithNames(panePID, []string{"sleep"}, 0) {
+	for !snapshotHasDescendant(panePID, "sleep") {
 		if time.Now().After(deadline) {
 			t.Fatal("sleep child never became visible to the process-tree walk")
 		}
@@ -203,7 +208,7 @@ func TestAgentInputTarget_WrappedPane(t *testing.T) {
 	exec := &fakeExecutor{outs: []string{
 		// list-panes -s: a user's split pane plus the wrapped agent pane.
 		// The bogus PID has no live process, so the first pane cannot match.
-		"pane\t@1.%1\tvim\t999999999\npane\t@1.%2\tsystemd-run\t" + panePID,
+		"pane\t@1.%1\tvim\t999999999\tgc-eol\npane\t@1.%2\tsystemd-run\t" + panePID + "\tgc-eol",
 		// show-environment GT_PROCESS_NAMES
 		"GT_PROCESS_NAMES=sleep",
 	}}
@@ -225,6 +230,7 @@ func TestAgentInputTarget_WrappedPane(t *testing.T) {
 // requests return a dead PID with no descendants, modeling the startup window
 // where systemd-run exists but the agent has not exec'd yet.
 type wrappedWaitExecutor struct {
+	paneCommand  string // the wrapper the pane reports; "" means systemd-run
 	deadPID      string
 	livePID      string
 	livePIDAfter int
@@ -240,6 +246,9 @@ func (e *wrappedWaitExecutor) execute(args []string) (string, error) {
 			// Agent-pane reads: the session's one, unmarked pane.
 			switch args[len(args)-1] {
 			case agentPaneMarkerFormat + "\t#{pane_current_command}":
+				if e.paneCommand != "" {
+					return "pane\t" + e.paneCommand, nil
+				}
 				return "pane\tsystemd-run", nil
 			case agentPaneMarkerFormat + "\t#{pane_pid}":
 				e.pidRequests++
@@ -280,7 +289,7 @@ func TestWaitForCommand_WrappedPane(t *testing.T) {
 
 	livePID := strconv.Itoa(os.Getpid())
 	deadline := time.Now().Add(5 * time.Second)
-	for !hasDescendantWithNames(livePID, []string{"sleep"}, 0) {
+	for !snapshotHasDescendant(livePID, "sleep") {
 		if time.Now().After(deadline) {
 			t.Fatal("sleep child never became visible to the process-tree walk")
 		}
@@ -312,4 +321,108 @@ func TestWaitForCommand_WrappedPane(t *testing.T) {
 			t.Fatalf("pane PID requested %d times, want >= 3 (wait must keep polling until the descendant appears)", exec.pidRequests)
 		}
 	})
+}
+
+// snapshotHasDescendant reports whether a process named in names runs below
+// pid in a fresh process-table snapshot, the view the pane probes judge by.
+func snapshotHasDescendant(pid string, names ...string) bool {
+	processes, err := fetchProcessSnapshot(context.Background())
+	if err != nil {
+		return false
+	}
+	return processes.hasDescendantWithNames(pid, proctable.ProcessNameSet(names), 0)
+}
+
+func TestAgentScopeUnitName(t *testing.T) {
+	cases := []struct {
+		name, city, session, suffix, want string
+	}{
+		{"plain", "city_hy", "mayor", "ab12cd34", "gc-city_hy-mayor-ab12cd34.scope"},
+		{"slash in qualified name", "city_hy", "pringle/frito", "x", "gc-city_hy-pringle_frito-x.scope"},
+		{"disallowed bytes", "my city", "a@b$c\\d é", "x", "gc-my_city-a_b_c_d___-x.scope"},
+		{"allowed punctuation kept", "c", "a:b_c.d-e", "x", "gc-c-a:b_c.d-e-x.scope"},
+		{"no city", "", "mayor", "x", "gc-mayor-x.scope"},
+		{"no session", "c", "", "x", "gc-c-pane-x.scope"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := agentScopeUnitName(tc.city, tc.session, tc.suffix); got != tc.want {
+				t.Fatalf("agentScopeUnitName(%q, %q, %q) = %q, want %q", tc.city, tc.session, tc.suffix, got, tc.want)
+			}
+		})
+	}
+}
+
+// A unit name must stay under systemd's 255-byte cap and inside its
+// alphabet however long or odd the city and session names are.
+func TestAgentScopeUnitNameBounded(t *testing.T) {
+	long := strings.Repeat("ç/", 400)
+	got := agentScopeUnitName(long, long, randomScopeSuffix())
+	if len(got) >= 255 {
+		t.Fatalf("unit name is %d bytes, want < 255: %q", len(got), got)
+	}
+	if !strings.HasSuffix(got, ".scope") {
+		t.Fatalf("unit name %q lacks .scope suffix", got)
+	}
+	for i := 0; i < len(got); i++ {
+		c := got[i]
+		ok := c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || strings.IndexByte(":_.-", c) >= 0
+		if !ok {
+			t.Fatalf("unit name %q has disallowed byte %q at %d", got, c, i)
+		}
+	}
+}
+
+// Two spawns of the same session get distinct scope names, so a respawn
+// never collides with a scope systemd is still collecting.
+func TestAgentScopeUnitNameUniquePerSpawn(t *testing.T) {
+	t.Setenv(AgentSliceEnv, "gascity-agents.slice")
+	tm, exec := newSliceTestTmux(t)
+	tm.agentSlice.suffix = nil // the real random suffix
+	seen := map[string]bool{}
+	for i := 0; i < 50; i++ {
+		if err := tm.NewSessionWithCommand("gc-test-unique", "/work", "claude"); err != nil {
+			t.Fatalf("NewSessionWithCommand: %v", err)
+		}
+	}
+	for _, args := range exec.calls {
+		if !slices.Contains(args, "new-session") {
+			continue
+		}
+		cmd := args[len(args)-1]
+		_, rest, ok := strings.Cut(cmd, "--unit=")
+		if !ok {
+			t.Fatalf("pane command lacks --unit: %q", cmd)
+		}
+		unit, _, _ := strings.Cut(rest, " ")
+		if !strings.HasPrefix(unit, "gc-gc-test-unique-") {
+			t.Fatalf("unit %q does not name the session", unit)
+		}
+		if seen[unit] {
+			t.Fatalf("unit %q repeated across spawns", unit)
+		}
+		seen[unit] = true
+	}
+	if len(seen) != 50 {
+		t.Fatalf("saw %d distinct units, want 50", len(seen))
+	}
+}
+
+// The tmux socket names the city in the unit.
+func TestAgentScopeUnitUsesSocketAsCity(t *testing.T) {
+	t.Setenv(AgentSliceEnv, "gascity-agents.slice")
+	tm, exec := newSliceTestTmux(t)
+	tm.cfg.SocketName = "city_hy"
+	if err := tm.NewSessionWithCommand("mayor", "/work", "claude"); err != nil {
+		t.Fatalf("NewSessionWithCommand: %v", err)
+	}
+	var got string
+	for _, args := range exec.calls {
+		if slices.Contains(args, "new-session") {
+			got = args[len(args)-1]
+		}
+	}
+	if !strings.Contains(got, " --unit=gc-city_hy-mayor-s1.scope ") {
+		t.Fatalf("pane command = %q, want unit gc-city_hy-mayor-s1.scope", got)
+	}
 }
