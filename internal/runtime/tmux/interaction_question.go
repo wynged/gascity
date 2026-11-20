@@ -87,10 +87,6 @@ var (
 	// draws before an option's label: "[ ]", or "[✔]" once ticked.
 	askUserQuestionCheckboxRe = regexp.MustCompile(`^\[.\](?:\s+|$)`)
 
-	// askUserQuestionCursorRe matches the focused unnumbered row below the
-	// options, a multiSelect dialog's Submit. Display only.
-	askUserQuestionCursorRe = regexp.MustCompile(`^❯\s+(.+)$`)
-
 	// askUserQuestionNameRuleRe matches the rule Claude Code draws under the
 	// dialog in a named session, carrying the session's name
 	// ("──────── project ─").
@@ -224,8 +220,6 @@ func parseQuestionPage(lines []string) *parsedQuestion {
 		}
 		if len(q.Choices) == 0 {
 			question = append(question, strings.TrimSpace(strings.TrimPrefix(trimmed, "│")))
-		} else if m := askUserQuestionCursorRe.FindStringSubmatch(trimmed); m != nil {
-			q.Focused = strings.TrimSpace(m[1])
 		}
 	}
 	q.Question = strings.Join(question, " ")

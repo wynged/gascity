@@ -39,10 +39,11 @@ var questionMenuLayouts = []struct {
 	// A named session draws a rule with its name below the dialog.
 	{"named-multi-q1.txt", true, "Red"},
 	{"named-multi-review.txt", true, "Submit answers"},
-	{"multiselect.txt", true, "[ ] Cheese"},
+	{"multiselect.txt", true, "Cheese"},
 	// A ticked option marks the tab ☒, and the cursor rests on the unnumbered
-	// Submit row.
-	{"multiselect-submit.txt", true, "Submit"},
+	// Submit row, which upstream's parser (#8914) does not report as focused;
+	// an option's checkbox is its state, not its label.
+	{"multiselect-submit.txt", true, ""},
 	{"answered-scrollback.txt", false, ""},
 	{"idle-composer.txt", false, ""},
 	{"idle-quotes-menu.txt", false, ""},

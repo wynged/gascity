@@ -2089,7 +2089,7 @@ func TestSubmitDefaultDeferredResetPendingStampsEmptyEpochToSurviveRotation(t *t
 func TestSubmitDefaultDeferredRestartRequestedLeavesWakeToController(t *testing.T) {
 	store := beads.NewMemStore()
 	sp := runtime.NewFake()
-	mgr := NewManagerWithOptions(store, sp, WithCityPath(t.TempDir()))
+	mgr := NewManagerWithOptions(beadstest.Sessions(store), sp, WithCityPath(t.TempDir()))
 
 	info, err := mgr.CreateSession(context.Background(), CreateOptions{Template: "helper", Command: "claude", WorkDir: t.TempDir(), Provider: "claude", ExtraMeta: map[string]string{"session_origin": "manual"}})
 	if err != nil {
