@@ -2904,7 +2904,7 @@ func doSessionPeekFallback(target string, lines int, jsonOutput bool, stdout, st
 	}
 	state := ""
 	if b, getErr := sessStore.Get(sessionID); getErr == nil {
-		state = b.Metadata["state"]
+		state = sessionInfoFromBead(b).MetadataState
 	}
 
 	if jsonOutput {
