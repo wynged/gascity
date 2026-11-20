@@ -928,6 +928,9 @@ func importedFrontmatterSkillFixture(t *testing.T) (string, materialize.CityCata
 	t.Setenv("GC_HOME", t.TempDir())
 	cityPath := t.TempDir()
 	writeTemplateResolveCityConfig(t, cityPath, "file")
+	// skillAppendixAgents' stage-2 agent works in a pool worktree, which is
+	// its own git root and so does not see the city root's skill sink.
+	markNestedGitRoot(t, cityPath, ".gc/worktrees/builder-1")
 	packDir := t.TempDir()
 	skillsDir := filepath.Join(packDir, "skills")
 	skillDir := filepath.Join(skillsDir, "gc-work")
