@@ -501,7 +501,7 @@ calls = 5
 [[count]]
 path = "cmd/gc/cmd_session_test.go"
 resource = "http_test_server"
-calls = 5
+calls = 6
 
 [[count]]
 path = "cmd/gc/cmd_session_test.go"
