@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gastownhall/gascity/internal/beadmeta"
 	"github.com/gastownhall/gascity/internal/beads"
 	"github.com/gastownhall/gascity/internal/config"
 	"github.com/gastownhall/gascity/internal/runtime"
@@ -615,7 +616,7 @@ func TestBuildDesiredState_ScaleFromZero_LegacyBoundUnassignedRoutedWorkWakesCan
 // answers 0 stays asleep even though routed work is sitting there ready.
 //
 // Without the opt-in, the cold-wake probe merges max(custom 0, probe 1) and the
-// pool is re-woken every tick — the lookout/hand loop of 2026-08-31, where a
+// pool is re-woken every tick — the production loop this guards against, where a
 // parked epic stayed routed and unassigned while its review was out and the
 // check correctly withheld demand the probe then supplied anyway.
 func TestBuildDesiredState_ScaleFromZero_AuthoritativeScaleCheckZeroStaysAsleep(t *testing.T) {
@@ -673,12 +674,13 @@ func TestBuildDesiredState_ScaleFromZero_AuthoritativeScaleCheckZeroStaysAsleep(
 	}
 }
 
-// TestBuildDesiredState_ScaleFromZero_AuthoritativeScaleCheckFailureStillWakes
+// TestBuildDesiredState_ScaleFromZero_AuthoritativeScaleCheckFailureKeepsProbeDemand
 // is the other half of the contract: authoritative applies to a real answer,
-// never to a broken one. A check that exits non-zero is partial, not a zero, so
-// the cold-wake probe still wakes the pool and routed work cannot strand behind
-// a check that cannot run.
-func TestBuildDesiredState_ScaleFromZero_AuthoritativeScaleCheckFailureStillWakes(t *testing.T) {
+// never to a broken one. A check that exits non-zero stays partial, not a zero,
+// so it keeps the cold-wake probe's demand of 1 instead of being read as an
+// authoritative 0. Whether that demand creates a session is still decided by
+// the existing partial-read guard, which blocks a fresh create.
+func TestBuildDesiredState_ScaleFromZero_AuthoritativeScaleCheckFailureKeepsProbeDemand(t *testing.T) {
 	tmpDir := t.TempDir()
 	rigPath := tmpDir + "/rigs/rig-A"
 	if err := os.MkdirAll(rigPath, 0o755); err != nil {
@@ -737,5 +739,76 @@ func TestBuildDesiredState_ScaleFromZero_AuthoritativeScaleCheckFailureStillWake
 	// not whether a broken check can spawn.
 	if len(result.State) != 0 {
 		t.Errorf("partial demand read should block a fresh create, got %d desired", len(result.State))
+	}
+}
+
+// TestBuildDesiredState_ScaleFromZero_AuthoritativeScaleCheckPositiveKeepsWorkProvenance
+// pins the other direction of the authoritative merge: when the check answers
+// N > 0 while the pool is cold, the count stays the check's, and the cold-wake
+// probe still names the routed work for the seat it wakes, so the new session
+// carries the same trigger-bead provenance a non-authoritative cold pool gets.
+func TestBuildDesiredState_ScaleFromZero_AuthoritativeScaleCheckPositiveKeepsWorkProvenance(t *testing.T) {
+	tmpDir := t.TempDir()
+	rigPath := tmpDir + "/rigs/rig-A"
+	if err := os.MkdirAll(rigPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	maxSess := 5
+	minSess := 0
+	cfg := &config.City{
+		Agents: []config.Agent{
+			{
+				Name:                    "planner",
+				MaxActiveSessions:       &maxSess,
+				MinActiveSessions:       &minSess,
+				ScaleCheck:              "printf 1",
+				ScaleCheckAuthoritative: true,
+				Dir:                     "rig-A",
+				Provider:                "mock",
+			},
+		},
+		Rigs:      []config.Rig{{Name: "rig-A", Path: rigPath}},
+		Providers: map[string]config.ProviderSpec{"mock": {Command: "true"}},
+	}
+
+	cityStore := beads.NewMemStore()
+	rigAStore := beads.NewMemStore()
+	rigStores := map[string]beads.Store{"rig-A": rigAStore}
+	qualifiedName := "rig-A/planner"
+
+	work, err := cityStore.Create(beads.Bead{
+		ID:       "bead-1",
+		Status:   "open",
+		Type:     "task",
+		Metadata: map[string]string{"gc.routed_to": qualifiedName},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	sessionBeads := &sessionBeadSnapshot{}
+
+	result := buildDesiredStateWithSessionBeads(
+		"test-city", tmpDir, time.Now(), cfg, &localMockProvider{},
+		cityStore, rigStores, sessionBeads, nil, os.Stderr,
+	)
+
+	if demand := result.ScaleCheckCounts[qualifiedName]; demand != 1 {
+		t.Errorf("authoritative scale_check returned 1; expected demand 1, got %d", demand)
+	}
+	if len(result.State) != 1 {
+		t.Fatalf("expected one desired session, got %d", len(result.State))
+	}
+	sessions := sessionBeads.OpenInfos()
+	if len(sessions) != 1 {
+		t.Fatalf("created session beads = %d, want 1", len(sessions))
+	}
+	stored, err := cityStore.Get(sessions[0].ID)
+	if err != nil {
+		t.Fatalf("Get(session): %v", err)
+	}
+	if got := stored.Metadata[beadmeta.TriggerBeadIDMetadataKey]; got != work.ID {
+		t.Errorf("trigger bead metadata = %q, want %q (probe's named work must survive the authoritative merge)", got, work.ID)
 	}
 }

@@ -4,8 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
-	"path/filepath"
 	"strings"
 
 	"github.com/gastownhall/gascity/internal/runtime"
@@ -335,9 +333,10 @@ func (h *SessionHandle) State(ctx context.Context) (State, error) {
 			return State{}, err
 		}
 		// Under the program-status shadow switch, the phase this view
-		// settles on is recorded beside the record (observation); the
+		// settles on is recorded beside the record this view read
+		// (observation), the reading its phase decides with under on; the
 		// phase returned is this view's alone.
-		defer func() { h.manager.RecordObservationShadow(info, observationVerdict(state.Phase)) }()
+		defer func() { h.manager.RecordObservationShadow(info, state.Program, observationVerdict(state.Phase)) }()
 		if pending != nil {
 			state.Phase = PhaseBlocked
 			state.Pending = pending
@@ -827,12 +826,52 @@ func (h *SessionHandle) startCommand(id string) (string, error) {
 	if resumeCommand := strings.TrimSpace(h.session.Resume.ResumeCommand); resumeCommand != "" {
 		resumeInfo.ResumeCommand = resumeCommand
 	}
-	if fresh, ok, err := h.freshCommandForStaleResumeKey(id, resumeInfo); err != nil {
-		return "", err
-	} else if ok {
-		return fresh, nil
+	if h.unlaunchedSessionKey(info, pr) {
+		return startCommandWithSessionID(resumeInfo, h.session)
 	}
 	return sessionpkg.BuildResumeCommand(resumeInfo), nil
+}
+
+// unlaunchedSessionKey reports whether the row's stored session key never
+// launched a conversation a resume could reattach to, so the start should open
+// a fresh conversation under the stored key with the provider's session-id
+// flag instead. The key must have a session-id flag to open one with, no
+// committed start may vouch for it, and the keyed transcript the resume would
+// reattach to must be probeable and absent under the roots this launch reads.
+// A committed start (started_config_hash) with no conversation reset pending
+// (continuation_reset_pending) vouches for the key, which then resumes
+// whatever the probe reads: a conversation under a root the probe cannot see,
+// such as a wrapper's own config dir, is not started over, and one whose
+// transcript is gone fails its resume into the session manager's
+// committed-conversation rule. A pending reset means the hash no longer speaks
+// for the key: a churn reset keeps the hash while it clears the key, which the
+// session sync then mints anew. The probe is the same probe and root rule the
+// reconciler's own start applies (workertranscript.KeyedProbeRoots): the
+// handle's search paths, plus the projects root of an absolute
+// CLAUDE_CONFIG_DIR the launch's env names. A relative or ~ value adds no
+// root; a provider whose transcript layout cannot be probed, a missing key or
+// work dir, and a transcript that is present all keep the resume.
+func (h *SessionHandle) unlaunchedSessionKey(info sessionpkg.Info, pr sessionpkg.PersistedResponse) bool {
+	if h.session.Resume.SessionIDFlag == "" || strings.TrimSpace(info.SessionKey) == "" {
+		return false
+	}
+	if strings.TrimSpace(pr.Metadata["started_config_hash"]) != "" &&
+		strings.TrimSpace(pr.Metadata["continuation_reset_pending"]) == "" {
+		return false
+	}
+	hints := h.runtimeHints()
+	workDir := strings.TrimSpace(hints.WorkDir)
+	if workDir == "" {
+		workDir = info.WorkDir
+	}
+	provider := h.historyProvider(info)
+	roots := h.adapter.SearchPaths
+	if dir, ok := workertranscript.ClaudeConfigProjectsRoot(hints.Env); ok {
+		roots = MergeSearchPaths(append(append([]string(nil), roots...), dir))
+	}
+	present, probeable := workertranscript.HasKeyedTranscript(
+		workertranscript.KeyedProbeRoots(roots, provider), provider, workDir, info.SessionKey)
+	return probeable && !present
 }
 
 func startCommandWithSessionID(info sessionpkg.Info, spec SessionSpec) (string, error) {
@@ -850,81 +889,6 @@ func startCommandWithSessionID(info sessionpkg.Info, spec SessionSpec) (string, 
 		return "", fmt.Errorf("%w: command is required to start session", ErrHandleConfig)
 	}
 	return command + " " + spec.Resume.SessionIDFlag + " " + info.SessionKey, nil
-}
-
-// resumeTranscriptProbe reports whether the keyed transcript a resume would
-// reattach to is on disk (present) and whether the provider's keyed transcript
-// can be probed at all (probeable). A package var so tests can model a missing
-// transcript without building provider-specific trees.
-var resumeTranscriptProbe = func(searchPaths []string, provider, workDir, sessionKey string) (present, probeable bool) {
-	return workertranscript.HasKeyedTranscript(searchPaths, provider, workDir, sessionKey)
-}
-
-// freshCommandForStaleResumeKey is the worker-handle twin of the reconciler's
-// pre-flight stale-resume guard (session_lifecycle_parallel.go). A resume is
-// about to reattach to resumeInfo.SessionKey; if the provider's keyed
-// transcript for that key is provably gone, the resume would exit at once
-// (claude: "No conversation found") and the pane would die, every wake, until
-// someone reset the seat by hand (ch-uvh0). wake_mode=fresh does not cover it:
-// a session killed rather than slept keeps its key with
-// continuation_reset_pending=true and reset_committed_at empty.
-//
-// Instead: clear the key on the bead (StaleResumeKeyResetPatch, the same reset
-// the reconciler applies) so the bead stops naming a conversation that no
-// longer exists and the launch counts as a first start, and launch fresh --
-// with a newly minted key when the provider takes a session-id flag, else with
-// the bare command. Providers whose keyed transcript cannot be probed are left
-// alone.
-//
-// The probe roots follow upstream #8514 and the reconciler: claude-family
-// providers search the handle's search paths, other providers the defaults,
-// and an absolute CLAUDE_CONFIG_DIR adds <dir>/projects, without which a real
-// transcript under a custom config dir would read as missing.
-func (h *SessionHandle) freshCommandForStaleResumeKey(id string, resumeInfo sessionpkg.Info) (string, bool, error) {
-	key := strings.TrimSpace(resumeInfo.SessionKey)
-	if key == "" || (resumeInfo.ResumeFlag == "" && resumeInfo.ResumeCommand == "") {
-		return "", false, nil
-	}
-	// Message and Nudge compute this command before they know whether a start
-	// is needed. A live runtime will not be launched, so it must keep its key:
-	// clearing it here would mark a busy session for a reset (ch-i0r7). When
-	// liveness cannot be read, keep the key too.
-	if obs, err := h.manager.ObserveRuntimeForInfo(resumeInfo, nil); err != nil || obs.Running {
-		return "", false, nil
-	}
-	provider := strings.TrimSpace(resumeInfo.Provider)
-	if kind := strings.TrimSpace(resumeInfo.ProviderKind); kind != "" && !workertranscript.ProviderHasKeyedTranscript(provider) {
-		provider = kind
-	}
-	isClaude := strings.Contains(strings.ToLower(provider), "claude")
-	probePaths := h.searchPaths
-	if len(probePaths) == 0 || !isClaude {
-		probePaths = DefaultSearchPaths()
-	}
-	if dir := strings.TrimSpace(h.session.Env["CLAUDE_CONFIG_DIR"]); isClaude && filepath.IsAbs(dir) {
-		probePaths = MergeSearchPaths(append(append([]string(nil), probePaths...), filepath.Join(dir, "projects")))
-	}
-	present, probeable := resumeTranscriptProbe(probePaths, provider, resumeInfo.WorkDir, key)
-	if !probeable || present {
-		return "", false, nil
-	}
-	if err := h.manager.ClearStaleResumeKey(id); err != nil {
-		return "", false, fmt.Errorf("clearing stale resume key: %w", err)
-	}
-	log.Printf("session %s: keyed transcript for session_key %s is gone; cleared the key and starting fresh instead of resuming (provider=%s)", id, key, provider)
-	resumeInfo.SessionKey = ""
-	command := sessionpkg.BuildResumeCommand(resumeInfo)
-	if flag := strings.TrimSpace(h.session.Resume.SessionIDFlag); flag != "" {
-		newKey, err := sessionpkg.GenerateSessionKey()
-		if err != nil {
-			return "", false, fmt.Errorf("generating session key: %w", err)
-		}
-		if err := h.manager.PersistSessionKey(id, newKey); err != nil {
-			return "", false, err
-		}
-		command += " " + flag + " " + newKey
-	}
-	return command, true, nil
 }
 
 func firstProviderSessionStart(state sessionpkg.State, metadata map[string]string) bool {

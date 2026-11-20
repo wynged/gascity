@@ -105,7 +105,7 @@ if [ -n "$ALL_DEPS" ] && printf '%s' "$ALL_DEPS" | jq -e 'type == "array" and al
 fi
 
 while IFS= read -r closed_id; do
-    if [ -n "$SUSPENDED_PREFIXES" ] && printf '%s\n' "$SUSPENDED_PREFIXES" | grep -qxF "${closed_id%%-*}"; then
+    if [ -n "$SUSPENDED_PREFIXES" ] && grep -qxF -- "${closed_id%%-*}" <<<"$SUSPENDED_PREFIXES"; then
         continue
     fi
     # Find beads that have a blocks dep on this closed issue.
@@ -123,7 +123,7 @@ while IFS= read -r closed_id; do
         continue
     fi
     while IFS= read -r dep_id; do
-        if [ -n "$SUSPENDED_PREFIXES" ] && printf '%s\n' "$SUSPENDED_PREFIXES" | grep -qxF "${dep_id%%-*}"; then
+        if [ -n "$SUSPENDED_PREFIXES" ] && grep -qxF -- "${dep_id%%-*}" <<<"$SUSPENDED_PREFIXES"; then
             continue
         fi
         # Convert blocks → related: remove blocking semantics, keep audit trail.

@@ -1,27 +1,26 @@
 package tmux
 
 import (
-	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
 	"io"
 	"log"
 	"os"
-	"os/exec"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/gastownhall/gascity/internal/runtime/programstatus"
 	"github.com/gastownhall/gascity/internal/shellquote"
+	"github.com/gastownhall/gascity/internal/userscope"
 )
 
 // AgentSliceEnv names the environment variable that, when set to a systemd
 // user slice (e.g. "gascity-agents.slice"), makes the tmux provider wrap
 // every pane's initial command in a transient systemd user scope:
 //
-//	systemd-run --user --scope --slice=<slice> --unit=<unit> --collect --quiet --expand-environment=no -- sh -c '<command>'
+//	systemd-run --user --scope --slice=<slice> --collect --quiet --expand-environment=no --unit=<unit> -- sh -c '<command>'
 //
 // <unit> names the seat: gc-<city>-<session>-<suffix>.scope (see
 // agentScopeUnitName), so systemctl --user list-units and the journal's
@@ -30,14 +29,6 @@ import (
 // never collides with the previous incarnation's scope while systemd is
 // still collecting it.
 //
-// --expand-environment=no is load-bearing. systemd-run (v254+) expands
-// ${VAR} in its command arguments by default, the way ExecStart= does, and
-// the command it receives is the pane's shell script: a long prompt's
-// `__gc_prompt="${__gc_prompt%.}"` came out as `__gc_prompt=""`, so every
-// session started through a prompt file launched with an empty first
-// message. A systemd too old for the flag fails the probe below and runs
-// unwrapped, which is the safe direction.
-//
 // Rationale: systemd-enabled tmux builds (stock Ubuntu) move every pane into
 // a transient tmux-spawn-*.scope under the default user slice, so agent
 // processes escape whatever slice the tmux server itself runs in. Wrapping
@@ -45,10 +36,6 @@ import (
 // slice where resource weights can be applied. Default-off: when unset, pane
 // commands run unwrapped exactly as before.
 const AgentSliceEnv = "GC_AGENT_SLICE"
-
-// agentSliceProbeTimeout bounds the one-time systemd-run availability probe.
-// Test-overridable.
-var agentSliceProbeTimeout = 5 * time.Second
 
 // wrapperCommands lists pane-root wrapper binaries produced by pane-command
 // wrapping. A wrapped pane reports the wrapper as pane_current_command for
@@ -70,44 +57,25 @@ func isWrapperCommand(cmd string) bool {
 	return false
 }
 
-// probeAgentSliceSupport verifies that systemd-run exists and the systemd
-// user manager responds by running a no-op command in a transient scope on
-// the target slice. The probe runs in the gc process's environment, while
-// pane commands execute with the tmux server's environment. gc normally
-// spawns the tmux server itself, so the server inherits gc's environment
-// and the probe is representative — but a pre-existing server whose global
-// environment lacks a reachable user bus (XDG_RUNTIME_DIR,
-// DBUS_SESSION_BUS_ADDRESS) can still fail wrapped spawns after a
-// successful probe here.
-func probeAgentSliceSupport(slice string) error {
-	if _, err := exec.LookPath("systemd-run"); err != nil {
-		return fmt.Errorf("systemd-run not found: %w", err)
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), agentSliceProbeTimeout)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, "systemd-run",
-		"--user", "--scope", "--slice="+slice, "--collect", "--quiet", "--expand-environment=no", "--", "true")
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		msg := strings.TrimSpace(string(out))
-		if msg != "" {
-			return fmt.Errorf("systemd user manager probe failed: %w: %s", err, msg)
-		}
-		return fmt.Errorf("systemd user manager probe failed: %w", err)
-	}
-	return nil
-}
-
 // agentSliceWrapper decides whether pane commands are wrapped in a transient
-// systemd user scope. The availability probe runs at most once per Tmux
+// systemd user scope, delegating the availability probe and its graceful
+// fallback to [userscope.Wrapper]. The probe runs at most once per Tmux
 // instance; on failure it warns once and all subsequent commands run
-// unwrapped (graceful fallback).
+// unwrapped.
+//
+// The probe runs in the gc process's environment, while pane commands
+// execute with the tmux server's environment. gc normally spawns the tmux
+// server itself, so the server inherits gc's environment and the probe is
+// representative — but a pre-existing server whose global environment lacks
+// a reachable user bus (XDG_RUNTIME_DIR, DBUS_SESSION_BUS_ADDRESS) can still
+// fail wrapped spawns after a successful probe here.
 type agentSliceWrapper struct {
-	probe  func(slice string) error // test seam; nil means probeAgentSliceSupport
+	probe  func(slice string) error // test seam; nil means userscope.Probe
 	warn   io.Writer                // test seam; nil means the standard logger
 	suffix func() string            // test seam; nil means randomScopeSuffix
-	once   sync.Once
-	ok     bool
+
+	init  sync.Once
+	scope *userscope.Wrapper
 }
 
 // wrap returns command wrapped for the given slice, or command unchanged
@@ -122,11 +90,8 @@ func (w *agentSliceWrapper) wrap(slice, city, session, command string) string {
 	if suffix == nil {
 		suffix = randomScopeSuffix
 	}
-	return shellquote.Join([]string{
-		"systemd-run", "--user", "--scope", "--slice=" + slice,
-		"--unit=" + agentScopeUnitName(city, session, suffix()),
-		"--collect", "--quiet", "--expand-environment=no", "--", "sh", "-c", command,
-	})
+	scope := userscope.Scope{Slice: slice, Unit: agentScopeUnitName(city, session, suffix())}
+	return shellquote.Join(userscope.ScopeArgv(scope, []string{"sh", "-c", command}))
 }
 
 // Bounds on the parts of a scope unit name. systemd caps a unit name at 255
@@ -191,24 +156,22 @@ func (w *agentSliceWrapper) active(slice string) bool {
 	if slice == "" {
 		return false
 	}
-	w.once.Do(func() {
-		probe := w.probe
-		if probe == nil {
-			probe = probeAgentSliceSupport
-		}
-		if err := probe(slice); err != nil {
-			msg := fmt.Sprintf("%s=%q set but transient user scopes are unavailable; pane commands run unwrapped: %v",
-				AgentSliceEnv, slice, err)
-			if w.warn != nil {
-				_, _ = fmt.Fprintln(w.warn, "gc: "+msg)
-			} else {
-				log.Printf("tmux agent slice: %s", msg)
-			}
-			return
-		}
-		w.ok = true
+	w.init.Do(func() {
+		w.scope = &userscope.Wrapper{Probe: w.probe, Unavailable: w.unavailable}
 	})
-	return w.ok
+	return w.scope.Active(slice)
+}
+
+// unavailable reports, once, that GC_AGENT_SLICE is set but transient user
+// scopes cannot be created.
+func (w *agentSliceWrapper) unavailable(slice string, err error) {
+	msg := fmt.Sprintf("%s=%q set but transient user scopes are unavailable; pane commands run unwrapped: %v",
+		AgentSliceEnv, slice, err)
+	if w.warn != nil {
+		_, _ = fmt.Fprintln(w.warn, "gc: "+msg)
+		return
+	}
+	log.Printf("tmux agent slice: %s", msg)
 }
 
 // wrapPaneCommand applies the GC_AGENT_SLICE systemd user-scope wrapper to a

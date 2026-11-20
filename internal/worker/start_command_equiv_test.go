@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/gastownhall/gascity/internal/beads"
+	"github.com/gastownhall/gascity/internal/beads/beadstest"
 	"github.com/gastownhall/gascity/internal/runtime"
 	sessionpkg "github.com/gastownhall/gascity/internal/session"
 	"github.com/gastownhall/gascity/internal/sessionlog"
@@ -18,13 +19,9 @@ import (
 // (Manager.GetWithBead -> session.Store.GetPersistedResponse + EnrichInfo).
 func newStartCommandHandle(t *testing.T, spec SessionSpec, resume sessionpkg.ProviderResume, command string) (*SessionHandle, *beads.MemStore, sessionpkg.Info) {
 	t.Helper()
-	return newStartCommandHandleWithProvider(t, spec, resume, command, runtime.NewFake())
-}
-
-func newStartCommandHandleWithProvider(t *testing.T, spec SessionSpec, resume sessionpkg.ProviderResume, command string, sp *runtime.Fake) (*SessionHandle, *beads.MemStore, sessionpkg.Info) {
-	t.Helper()
 	store := beads.NewMemStore()
-	manager := sessionpkg.NewManagerWithOptions(store, sp, sessionpkg.WithCityPath(t.TempDir()))
+	sp := runtime.NewFake()
+	manager := sessionpkg.NewManagerWithOptions(beadstest.Sessions(store), sp, sessionpkg.WithCityPath(t.TempDir()))
 
 	info, err := manager.CreateSession(context.Background(), sessionpkg.CreateOptions{
 		BeadOnly:  true,
@@ -32,7 +29,7 @@ func newStartCommandHandleWithProvider(t *testing.T, spec SessionSpec, resume se
 		Title:     "Probe",
 		Command:   command,
 		WorkDir:   t.TempDir(),
-		Provider:  "legacy-provider",
+		Provider:  spec.Provider,
 		Transport: "",
 		Resume:    resume,
 	})
@@ -198,9 +195,11 @@ func TestStartCommandStaleResumeKey(t *testing.T) {
 				sessionpkg.ProviderResume{ResumeFlag: "--resume", SessionIDFlag: "--session-id"},
 				"mycmd",
 			)
-			handle.searchPaths = []string{root}
-			if err := store.SetMetadata(info.ID, "started_config_hash", "hash-abc"); err != nil {
-				t.Fatalf("SetMetadata(started_config_hash): %v", err)
+			handle.adapter.SearchPaths = []string{root}
+			// A restart handoff leaves the row past its first start with no
+			// committed conversation.
+			if err := store.SetMetadata(info.ID, "creation_complete_at", "2026-01-01T00:00:00Z"); err != nil {
+				t.Fatalf("SetMetadata(creation_complete_at): %v", err)
 			}
 			if tt.transcript {
 				dir := filepath.Join(root, sessionlog.ProjectSlug(info.WorkDir))
@@ -216,19 +215,7 @@ func TestStartCommandStaleResumeKey(t *testing.T) {
 			if err != nil {
 				t.Fatalf("startCommand: %v", err)
 			}
-			wantKey := info.SessionKey
-			if tt.wantFlag == "--session-id" {
-				// A missing transcript retires the stored key and mints a new one (ch-uvh0).
-				bead, err := store.Get(info.ID)
-				if err != nil {
-					t.Fatalf("Get: %v", err)
-				}
-				wantKey = bead.Metadata["session_key"]
-				if wantKey == "" || wantKey == info.SessionKey {
-					t.Fatalf("session_key after stale clear = %q, want a new key (old %q)", wantKey, info.SessionKey)
-				}
-			}
-			want := "mycmd " + tt.wantFlag + " " + wantKey
+			want := "mycmd " + tt.wantFlag + " " + info.SessionKey
 			if got != want {
 				t.Fatalf("startCommand() = %q, want %q", got, want)
 			}
@@ -267,9 +254,11 @@ func TestStartCommandClaudeConfigDir(t *testing.T) {
 				sessionpkg.ProviderResume{ResumeFlag: "--resume", SessionIDFlag: "--session-id"},
 				"mycmd",
 			)
-			handle.searchPaths = []string{t.TempDir()}
-			if err := store.SetMetadata(info.ID, "started_config_hash", "hash-abc"); err != nil {
-				t.Fatalf("SetMetadata(started_config_hash): %v", err)
+			handle.adapter.SearchPaths = []string{t.TempDir()}
+			// A restart handoff leaves the row past its first start with no
+			// committed conversation.
+			if err := store.SetMetadata(info.ID, "creation_complete_at", "2026-01-01T00:00:00Z"); err != nil {
+				t.Fatalf("SetMetadata(creation_complete_at): %v", err)
 			}
 			if tt.transcript {
 				dir := filepath.Join(configDir, "projects", sessionlog.ProjectSlug(info.WorkDir))
@@ -285,19 +274,7 @@ func TestStartCommandClaudeConfigDir(t *testing.T) {
 			if err != nil {
 				t.Fatalf("startCommand: %v", err)
 			}
-			wantKey := info.SessionKey
-			if tt.wantFlag == "--session-id" {
-				// A missing transcript retires the stored key and mints a new one (ch-uvh0).
-				bead, err := store.Get(info.ID)
-				if err != nil {
-					t.Fatalf("Get: %v", err)
-				}
-				wantKey = bead.Metadata["session_key"]
-				if wantKey == "" || wantKey == info.SessionKey {
-					t.Fatalf("session_key after stale clear = %q, want a new key (old %q)", wantKey, info.SessionKey)
-				}
-			}
-			want := "mycmd " + tt.wantFlag + " " + wantKey
+			want := "mycmd " + tt.wantFlag + " " + info.SessionKey
 			if got != want {
 				t.Fatalf("startCommand() = %q, want %q", got, want)
 			}
