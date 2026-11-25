@@ -103,6 +103,19 @@ func TestPoolDemandFilterDropsUnassignedCityStoreWork(t *testing.T) {
 // session must be resumed and the queued bead must get a fresh session, not be
 // realized onto the busy one.
 func TestBuildDesiredState_RigPoolLiveHolderOfCityStoreWorkGetsASecondSession(t *testing.T) {
+	assertLiveHolderGetsASecondSession(t, nil, nil)
+}
+
+// The queued bead outranks the held one, so its new request sorts ahead of the
+// holder's resume request. It must still get a fresh session rather than take
+// the busy holder.
+func TestBuildDesiredState_RigPoolHigherPriorityQueuedWorkDoesNotTakeTheBusyHolder(t *testing.T) {
+	p0, p4 := 0, 4
+	assertLiveHolderGetsASecondSession(t, &p4, &p0)
+}
+
+func assertLiveHolderGetsASecondSession(t *testing.T, claimedPriority, queuedPriority *int) {
+	t.Helper()
 	cityPath := t.TempDir()
 	rigPath := filepath.Join(cityPath, "riga")
 	if err := os.MkdirAll(rigPath, 0o755); err != nil {
@@ -127,6 +140,7 @@ func TestBuildDesiredState_RigPoolLiveHolderOfCityStoreWorkGetsASecondSession(t 
 	claimed, err := cityStore.Create(beads.Bead{
 		Title:    "station run in progress",
 		Type:     "task",
+		Priority: claimedPriority,
 		Assignee: holder.ID,
 		Metadata: map[string]string{beadmeta.RoutedToMetadataKey: "riga/worker"},
 	})
@@ -139,6 +153,7 @@ func TestBuildDesiredState_RigPoolLiveHolderOfCityStoreWorkGetsASecondSession(t 
 	if _, err := cityStore.Create(beads.Bead{
 		Title:    "station run queued",
 		Type:     "task",
+		Priority: queuedPriority,
 		Metadata: map[string]string{beadmeta.RoutedToMetadataKey: "riga/worker"},
 	}); err != nil {
 		t.Fatalf("create queued work: %v", err)
