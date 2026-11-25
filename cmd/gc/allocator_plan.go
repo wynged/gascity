@@ -265,7 +265,7 @@ func (p *decidePass) computePoolDesired() {
 	if len(standIns) > 0 {
 		rows = append(slices.Clip(p.decidable), standIns...)
 	}
-	p.poolWork = filterAssignedWorkBeadsForPoolDemandAt(p.cfg, p.in.CityPath, p.in.Demand.RelocatedClaimRefs,
+	p.poolWork = filterAssignedWorkBeadsForPoolDemandAt(p.cfg, p.in.CityPath, p.in.Demand.RelocatedClaimRefs, p.in.Demand.WakeClaimRefs,
 		rows, p.in.Demand.AssignedWork, p.in.Demand.AssignedStoreRefs, p.in.Now.UTC())
 	poolCfg := p.cfg
 	if len(p.in.SuspendedRigPaths) > 0 {
